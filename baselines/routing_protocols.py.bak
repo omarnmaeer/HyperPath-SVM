@@ -1,0 +1,1036 @@
+# File: hyperpath_svm/baselines/routing_protocols.py
+
+"""
+Traditional Routing Protocol Baselines for HyperPath-SVM Comparison
+
+This module implements traditional network routing protocols as baselines:
+- OSPF: Open Shortest Path First protocol simulation
+- BGP: Border Gateway Protocol simulation (simplified)
+- RIP: Routing Information Protocol
+- EIGRP: Enhanced Interior Gateway Routing Protocol
+- Load Balancing: Equal-cost multi-path routing
+
+These serve as fundamental baselines representing current network routing approaches.
+
+"""
+
+import numpy as np
+import logging
+from typing import Dict, List, Tuple, Optional, Any, Union, Set
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+import time
+import heapq
+from collections import defaultdict, deque
+import networkx as nx
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.preprocessing import LabelEncoder
+import warnings
+warnings.filterwarnings('ignore')
+
+from ..utils.logging_utils import get_logger
+from ..data.network_graph import NetworkGraph
+
+
+@dataclass
+class RoutingMetrics:
+    """Container for routing performance metrics."""
+    path_length: float = 0.0
+    hop_count: int = 0
+    delay: float = 0.0
+    bandwidth: float = 0.0
+    cost: float = 0.0
+    reliability: float = 1.0
+    load: float = 0.0
+    mtu: int = 1500
+
+
+@dataclass
+class RouteEntry:
+    """Single route entry in routing table."""
+    destination: int
+    next_hop: int
+    metric: float
+    interface: int
+    path: List[int] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
+    route_source: str = "unknown"
+
+
+@dataclass
+class RoutingTable:
+    """Complete routing table for a node."""
+    node_id: int
+    entries: Dict[int, RouteEntry] = field(default_factory=dict)
+    last_update: float = field(default_factory=time.time)
+    
+    def add_route(self, route: RouteEntry):
+        """Add or update route entry."""
+        self.entries[route.destination] = route
+        self.last_update = time.time()
+    
+    def get_route(self, destination: int) -> Optional[RouteEntry]:
+        """Get route to destination."""
+        return self.entries.get(destination)
+    
+    def remove_route(self, destination: int):
+        """Remove route entry."""
+        if destination in self.entries:
+            del self.entries[destination]
+            self.last_update = time.time()
+
+
+class BaseRoutingProtocol(BaseEstimator, ClassifierMixin, ABC):
+    """Abstract base class for routing protocols."""
+    
+    def __init__(self, network_graph: Optional[NetworkGraph] = None, **kwargs):
+        self.network_graph = network_graph
+        self.logger = get_logger(__name__)
+        self.routing_tables = {}  # node_id -> RoutingTable
+        self.is_fitted = False
+        self.protocol_name = self.__class__.__name__
+        self.convergence_time = 0.0
+        self.update_count = 0
+        self.label_encoder = LabelEncoder()
+        
+        # Protocol parameters
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+    
+    @abstractmethod
+    def _compute_routes(self):
+        """Compute routing tables using protocol logic."""
+        pass
+    
+    @abstractmethod
+    def _get_path_cost(self, path: List[int]) -> float:
+        """Calculate cost of a path according to protocol metrics."""
+        pass
+    
+    def fit(self, X: np.ndarray, y: np.ndarray) -> 'BaseRoutingProtocol':
+        """
+        Fit the routing protocol to network data.
+        
+        Args:
+            X: Network features (adjacency info, link metrics, etc.)
+            y: Routing decisions (optimal paths or next hops)
+        """
+        try:
+            self.logger.info(f"Initializing {self.protocol_name} routing protocol")
+            start_time = time.time()
+            
+            # Encode labels
+            self.label_encoder.fit(y)
+            
+            # Initialize network graph if not provided
+            if self.network_graph is None:
+                self._initialize_network_from_features(X)
+            
+            # Initialize routing tables
+            self._initialize_routing_tables()
+            
+            # Compute routes using protocol logic
+            self._compute_routes()
+            
+            # Calculate convergence time
+            self.convergence_time = time.time() - start_time
+            self.is_fitted = True
+            
+            self.logger.info(f"{self.protocol_name} converged in {self.convergence_time:.2f}s "
+                           f"with {self.update_count} updates")
+            
+            return self
+            
+        except Exception as e:
+            self.logger.error(f"{self.protocol_name} initialization failed: {str(e)}")
+            raise
+    
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict routing decisions for given network states.
+        
+        Args:
+            X: Network features for routing decisions
+            
+        Returns:
+            Predicted routing decisions (next hops or path indices)
+        """
+        if not self.is_fitted:
+            raise ValueError("Protocol must be fitted before prediction")
+        
+        try:
+            predictions = []
+            
+            for sample in X:
+                # Extract source and destination from features
+                # Assuming first two features are src and dst node IDs
+                src_node = int(sample[0]) if len(sample) > 0 else 0
+                dst_node = int(sample[1]) if len(sample) > 1 else 1
+                
+                # Get routing decision
+                routing_decision = self._get_routing_decision(src_node, dst_node)
+                predictions.append(routing_decision)
+            
+            # Encode predictions to match training labels
+            if hasattr(self.label_encoder, 'classes_'):
+                # Map routing decisions to label space
+                encoded_predictions = []
+                for pred in predictions:
+                    # Find closest label (simplified mapping)
+                    if pred < len(self.label_encoder.classes_):
+                        encoded_predictions.append(pred)
+                    else:
+                        encoded_predictions.append(0)  # Default to first class
+                return np.array(encoded_predictions)
+            else:
+                return np.array(predictions)
+            
+        except Exception as e:
+            self.logger.error(f"Prediction failed: {str(e)}")
+            raise
+    
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict routing decision probabilities.
+        
+        For routing protocols, this represents confidence in routing decisions.
+        """
+        if not self.is_fitted:
+            raise ValueError("Protocol must be fitted before prediction")
+        
+        try:
+            predictions = self.predict(X)
+            n_classes = len(self.label_encoder.classes_) if hasattr(self.label_encoder, 'classes_') else 2
+            
+            # Create probability matrix
+            probabilities = np.zeros((len(predictions), n_classes))
+            
+            for i, pred in enumerate(predictions):
+                # High confidence for routing protocol decisions
+                probabilities[i, pred] = 0.9
+                # Distribute remaining probability among other classes
+                remaining_prob = 0.1
+                other_classes = [j for j in range(n_classes) if j != pred]
+                if other_classes:
+                    prob_per_other = remaining_prob / len(other_classes)
+                    for j in other_classes:
+                        probabilities[i, j] = prob_per_other
+            
+            return probabilities
+            
+        except Exception as e:
+            self.logger.error(f"Probability prediction failed: {str(e)}")
+            raise
+    
+    def _initialize_network_from_features(self, X: np.ndarray):
+        """Initialize network graph from feature matrix."""
+        try:
+            # Assume X contains network topology information
+            # This is a simplified approach - in practice, you'd have explicit topology
+            n_nodes = int(np.sqrt(X.shape[1])) if X.shape[1] > 4 else 5
+            
+            # Create adjacency matrix
+            adjacency = np.random.random((n_nodes, n_nodes))
+            adjacency = (adjacency + adjacency.T) / 2  # Make symmetric
+            np.fill_diagonal(adjacency, 0)  # No self-loops
+            adjacency = (adjacency > 0.7).astype(float)  # Sparsify
+            
+            # Create node and edge features
+            node_features = np.random.random((n_nodes, 3))  # Basic node features
+            edge_features = np.random.random((np.sum(adjacency > 0), 2))  # Basic edge features
+            
+            self.network_graph = NetworkGraph(
+                adjacency_matrix=adjacency,
+                node_features=node_features,
+                edge_features=edge_features
+            )
+            
+            self.logger.info(f"Initialized network with {n_nodes} nodes from features")
+            
+        except Exception as e:
+            self.logger.error(f"Network initialization failed: {str(e)}")
+            # Create minimal network as fallback
+            adjacency = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+            self.network_graph = NetworkGraph(
+                adjacency_matrix=adjacency,
+                node_features=np.random.random((3, 3)),
+                edge_features=np.random.random((4, 2))
+            )
+    
+    def _initialize_routing_tables(self):
+        """Initialize empty routing tables for all nodes."""
+        n_nodes = self.network_graph.adjacency_matrix.shape[0]
+        for node_id in range(n_nodes):
+            self.routing_tables[node_id] = RoutingTable(node_id)
+    
+    def _get_routing_decision(self, src_node: int, dst_node: int) -> int:
+        """Get routing decision for src->dst pair."""
+        if src_node in self.routing_tables:
+            route = self.routing_tables[src_node].get_route(dst_node)
+            if route:
+                return route.next_hop
+        
+        # Fallback: return destination node (direct routing)
+        return dst_node % len(self.label_encoder.classes_) if hasattr(self.label_encoder, 'classes_') else 0
+    
+    def get_routing_statistics(self) -> Dict[str, Any]:
+        """Get routing protocol statistics."""
+        stats = {
+            'protocol_name': self.protocol_name,
+            'convergence_time': self.convergence_time,
+            'update_count': self.update_count,
+            'num_nodes': len(self.routing_tables),
+            'total_routes': sum(len(table.entries) for table in self.routing_tables.values()),
+            'average_routes_per_node': 0
+        }
+        
+        if stats['num_nodes'] > 0:
+            stats['average_routes_per_node'] = stats['total_routes'] / stats['num_nodes']
+        
+        return stats
+
+
+class OSPFProtocol(BaseRoutingProtocol):
+    """
+    Open Shortest Path First (OSPF) protocol implementation.
+    
+    OSPF is a link-state routing protocol that uses Dijkstra's algorithm
+    to compute shortest paths based on link costs.
+    """
+    
+    def __init__(self, area_id: int = 0, hello_interval: float = 10.0,
+                 dead_interval: float = 40.0, **kwargs):
+        super().__init__(**kwargs)
+        self.area_id = area_id
+        self.hello_interval = hello_interval
+        self.dead_interval = dead_interval
+        self.lsa_database = {}  # Link State Advertisement database
+        self.neighbor_states = defaultdict(dict)
+    
+    def _compute_routes(self):
+        """Compute routes using OSPF link-state algorithm."""
+        try:
+            self.logger.info("Computing OSPF routes using Dijkstra's algorithm")
+            
+            # Build link-state database
+            self._build_lsa_database()
+            
+            # Compute shortest paths for each node
+            n_nodes = self.network_graph.adjacency_matrix.shape[0]
+            
+            for src_node in range(n_nodes):
+                shortest_paths = self._dijkstra_shortest_paths(src_node)
+                self._update_routing_table(src_node, shortest_paths)
+                self.update_count += 1
+            
+            self.logger.info(f"OSPF computed {self.update_count} routing tables")
+            
+        except Exception as e:
+            self.logger.error(f"OSPF route computation failed: {str(e)}")
+            raise
+    
+    def _build_lsa_database(self):
+        """Build Link State Advertisement database."""
+        adjacency = self.network_graph.adjacency_matrix
+        n_nodes = adjacency.shape[0]
+        
+        for node in range(n_nodes):
+            neighbors = []
+            for neighbor in range(n_nodes):
+                if adjacency[node, neighbor] > 0:
+                    # Calculate link cost (inverse of bandwidth, plus delay)
+                    link_cost = self._calculate_ospf_cost(node, neighbor)
+                    neighbors.append({
+                        'neighbor_id': neighbor,
+                        'cost': link_cost,
+                        'link_type': 'point_to_point'
+                    })
+            
+            # Create LSA for this node
+            self.lsa_database[node] = {
+                'advertising_router': node,
+                'sequence_number': 1,
+                'age': 0,
+                'neighbors': neighbors,
+                'area_id': self.area_id
+            }
+    
+    def _calculate_ospf_cost(self, src: int, dst: int) -> float:
+        """Calculate OSPF link cost."""
+        try:
+            # OSPF reference bandwidth (100 Mbps = 10^8 bps)
+            reference_bandwidth = 100_000_000
+            
+            # Get edge features if available
+            edge_idx = self._get_edge_index(src, dst)
+            if edge_idx is not None and edge_idx < len(self.network_graph.edge_features):
+                # Assume first feature is bandwidth, second is delay
+                bandwidth = self.network_graph.edge_features[edge_idx, 0] * 1_000_000  # Convert to bps
+                delay = self.network_graph.edge_features[edge_idx, 1] if self.network_graph.edge_features.shape[1] > 1 else 0
+            else:
+                bandwidth = 10_000_000  # Default 10 Mbps
+                delay = 1  # Default 1ms
+            
+            # OSPF cost = reference_bandwidth / bandwidth + delay_factor
+            cost = reference_bandwidth / max(bandwidth, 1) + delay * 10
+            return max(1, cost)  # Minimum cost of 1
+            
+        except Exception:
+            return 10  # Default cost
+    
+    def _get_edge_index(self, src: int, dst: int) -> Optional[int]:
+        """Get edge index in edge_features array."""
+        # This is simplified - in practice, you'd maintain an edge index mapping
+        adjacency = self.network_graph.adjacency_matrix
+        edge_count = 0
+        
+        for i in range(adjacency.shape[0]):
+            for j in range(i + 1, adjacency.shape[1]):
+                if adjacency[i, j] > 0:
+                    if (i == src and j == dst) or (i == dst and j == src):
+                        return edge_count
+                    edge_count += 1
+        
+        return None
+    
+    def _dijkstra_shortest_paths(self, src_node: int) -> Dict[int, Tuple[float, List[int]]]:
+        """Compute shortest paths using Dijkstra's algorithm."""
+        n_nodes = self.network_graph.adjacency_matrix.shape[0]
+        distances = {node: float('inf') for node in range(n_nodes)}
+        previous = {node: None for node in range(n_nodes)}
+        distances[src_node] = 0
+        
+        # Priority queue: (distance, node)
+        pq = [(0, src_node)]
+        visited = set()
+        
+        while pq:
+            current_dist, current_node = heapq.heappop(pq)
+            
+            if current_node in visited:
+                continue
+            
+            visited.add(current_node)
+            
+            # Check neighbors
+            if current_node in self.lsa_database:
+                for neighbor_info in self.lsa_database[current_node]['neighbors']:
+                    neighbor = neighbor_info['neighbor_id']
+                    edge_cost = neighbor_info['cost']
+                    
+                    if neighbor not in visited:
+                        new_dist = current_dist + edge_cost
+                        if new_dist < distances[neighbor]:
+                            distances[neighbor] = new_dist
+                            previous[neighbor] = current_node
+                            heapq.heappush(pq, (new_dist, neighbor))
+        
+        # Reconstruct paths
+        paths = {}
+        for dst_node in range(n_nodes):
+            if distances[dst_node] < float('inf'):
+                path = []
+                current = dst_node
+                while current is not None:
+                    path.append(current)
+                    current = previous[current]
+                path.reverse()
+                paths[dst_node] = (distances[dst_node], path)
+        
+        return paths
+    
+    def _update_routing_table(self, src_node: int, shortest_paths: Dict[int, Tuple[float, List[int]]]):
+        """Update routing table with computed shortest paths."""
+        routing_table = self.routing_tables[src_node]
+        
+        for dst_node, (cost, path) in shortest_paths.items():
+            if dst_node != src_node and len(path) > 1:
+                next_hop = path[1]  # First hop after source
+                
+                route_entry = RouteEntry(
+                    destination=dst_node,
+                    next_hop=next_hop,
+                    metric=cost,
+                    interface=0,  # Simplified
+                    path=path,
+                    route_source="OSPF"
+                )
+                
+                routing_table.add_route(route_entry)
+    
+    def _get_path_cost(self, path: List[int]) -> float:
+        """Calculate OSPF cost of a path."""
+        total_cost = 0.0
+        for i in range(len(path) - 1):
+            src, dst = path[i], path[i + 1]
+            total_cost += self._calculate_ospf_cost(src, dst)
+        return total_cost
+
+
+class RIPProtocol(BaseRoutingProtocol):
+    """
+    Routing Information Protocol (RIP) implementation.
+    
+    RIP uses distance vector algorithm with hop count as metric.
+    Maximum hop count is 15, with 16 representing infinity.
+    """
+    
+    def __init__(self, max_hops: int = 15, update_interval: float = 30.0, **kwargs):
+        super().__init__(**kwargs)
+        self.max_hops = max_hops
+        self.update_interval = update_interval
+        self.infinity = max_hops + 1
+    
+    def _compute_routes(self):
+        """Compute routes using RIP distance vector algorithm."""
+        try:
+            self.logger.info("Computing RIP routes using distance vector algorithm")
+            
+            n_nodes = self.network_graph.adjacency_matrix.shape[0]
+            
+            # Initialize distance tables
+            distance_tables = self._initialize_distance_tables(n_nodes)
+            
+            # Bellman-Ford with RIP constraints
+            converged = False
+            iteration = 0
+            max_iterations = n_nodes * 2  # Prevent infinite loops
+            
+            while not converged and iteration < max_iterations:
+                converged = True
+                old_tables = {node: table.copy() for node, table in distance_tables.items()}
+                
+                # Update distance tables
+                for node in range(n_nodes):
+                    if self._update_distance_table(node, distance_tables):
+                        converged = False
+                
+                iteration += 1
+                self.update_count += 1
+            
+            # Convert distance tables to routing tables
+            self._build_routing_tables_from_distances(distance_tables)
+            
+            self.logger.info(f"RIP converged after {iteration} iterations")
+            
+        except Exception as e:
+            self.logger.error(f"RIP route computation failed: {str(e)}")
+            raise
+    
+    def _initialize_distance_tables(self, n_nodes: int) -> Dict[int, Dict[int, Tuple[int, int]]]:
+        """Initialize RIP distance tables. Format: {node: {dest: (distance, next_hop)}}"""
+        distance_tables = {}
+        adjacency = self.network_graph.adjacency_matrix
+        
+        for node in range(n_nodes):
+            distance_tables[node] = {}
+            
+            # Initialize distances
+            for dest in range(n_nodes):
+                if node == dest:
+                    distance_tables[node][dest] = (0, node)  # Distance to self is 0
+                elif adjacency[node, dest] > 0:
+                    distance_tables[node][dest] = (1, dest)  # Direct neighbor
+                else:
+                    distance_tables[node][dest] = (self.infinity, -1)  # Unreachable
+        
+        return distance_tables
+    
+    def _update_distance_table(self, node: int, distance_tables: Dict[int, Dict[int, Tuple[int, int]]]) -> bool:
+        """Update distance table for a node. Returns True if changes were made."""
+        updated = False
+        adjacency = self.network_graph.adjacency_matrix
+        n_nodes = adjacency.shape[0]
+        
+        # For each neighbor, incorporate their distance table
+        for neighbor in range(n_nodes):
+            if adjacency[node, neighbor] > 0:  # Direct neighbor
+                for dest in range(n_nodes):
+                    if dest != node:  # Don't route to self
+                        neighbor_dist, _ = distance_tables[neighbor][dest]
+                        new_dist = min(neighbor_dist + 1, self.infinity)
+                        current_dist, current_next_hop = distance_tables[node][dest]
+                        
+                        # Update if we found a better route
+                        if new_dist < current_dist:
+                            distance_tables[node][dest] = (new_dist, neighbor)
+                            updated = True
+                        # Split horizon with poison reverse
+                        elif current_next_hop == neighbor and neighbor_dist >= current_dist:
+                            distance_tables[node][dest] = (self.infinity, -1)
+                            updated = True
+        
+        return updated
+    
+    def _build_routing_tables_from_distances(self, distance_tables: Dict[int, Dict[int, Tuple[int, int]]]):
+        """Build routing tables from distance tables."""
+        for node, distances in distance_tables.items():
+            routing_table = self.routing_tables[node]
+            
+            for dest, (distance, next_hop) in distances.items():
+                if dest != node and distance < self.infinity:
+                    route_entry = RouteEntry(
+                        destination=dest,
+                        next_hop=next_hop,
+                        metric=float(distance),
+                        interface=0,
+                        route_source="RIP"
+                    )
+                    routing_table.add_route(route_entry)
+    
+    def _get_path_cost(self, path: List[int]) -> float:
+        """RIP cost is simply hop count."""
+        return max(1, len(path) - 1)  # Number of hops
+
+
+class BGPProtocol(BaseRoutingProtocol):
+    """
+    Simplified Border Gateway Protocol (BGP) implementation.
+    
+    BGP is a path vector protocol that makes routing decisions based on
+    network policies, rules, and path attributes.
+    """
+    
+    def __init__(self, as_number: int = 65000, local_preference: int = 100, **kwargs):
+        super().__init__(**kwargs)
+        self.as_number = as_number
+        self.local_preference = local_preference
+        self.bgp_table = defaultdict(list)  # dest -> list of paths with attributes
+        self.as_path_prepend = 0  # Path prepending for traffic engineering
+    
+    def _compute_routes(self):
+        """Compute routes using BGP path vector algorithm."""
+        try:
+            self.logger.info("Computing BGP routes using path vector algorithm")
+            
+            n_nodes = self.network_graph.adjacency_matrix.shape[0]
+            
+            # Simulate BGP path advertisements
+            self._generate_path_advertisements(n_nodes)
+            
+            # Apply BGP decision process
+            for node in range(n_nodes):
+                self._apply_bgp_decision_process(node)
+                self.update_count += 1
+            
+            self.logger.info(f"BGP processed {self.update_count} routing decisions")
+            
+        except Exception as e:
+            self.logger.error(f"BGP route computation failed: {str(e)}")
+            raise
+    
+    def _generate_path_advertisements(self, n_nodes: int):
+        """Generate BGP path advertisements."""
+        adjacency = self.network_graph.adjacency_matrix
+        
+        for origin in range(n_nodes):
+            for dest in range(n_nodes):
+                if origin != dest:
+                    # Find all possible paths (simplified)
+                    paths = self._find_all_paths(origin, dest, max_length=5)
+                    
+                    for path in paths:
+                        # Create BGP path attributes
+                        attributes = {
+                            'origin': origin,
+                            'as_path': [self.as_number + node for node in path],
+                            'next_hop': path[1] if len(path) > 1 else dest,
+                            'local_preference': self.local_preference,
+                            'med': len(path),  # Multi-Exit Discriminator
+                            'weight': 100 - len(path)  # Higher weight for shorter paths
+                        }
+                        
+                        self.bgp_table[dest].append({
+                            'path': path,
+                            'attributes': attributes,
+                            'feasible': True
+                        })
+    
+    def _find_all_paths(self, src: int, dst: int, max_length: int = 5, 
+                       current_path: Optional[List[int]] = None) -> List[List[int]]:
+        """Find all paths between src and dst (with maximum length limit)."""
+        if current_path is None:
+            current_path = [src]
+        
+        if len(current_path) > max_length:
+            return []
+        
+        if current_path[-1] == dst:
+            return [current_path]
+        
+        paths = []
+        adjacency = self.network_graph.adjacency_matrix
+        current_node = current_path[-1]
+        
+        for neighbor in range(adjacency.shape[0]):
+            if (adjacency[current_node, neighbor] > 0 and 
+                neighbor not in current_path):  # Avoid loops
+                
+                new_paths = self._find_all_paths(
+                    src, dst, max_length, current_path + [neighbor]
+                )
+                paths.extend(new_paths)
+        
+        return paths
+    
+    def _apply_bgp_decision_process(self, node: int):
+        """Apply BGP decision process to select best paths."""
+        routing_table = self.routing_tables[node]
+        
+        # Group paths by destination
+        destinations = set()
+        for dest in self.bgp_table.keys():
+            destinations.add(dest)
+        
+        for dest in destinations:
+            if dest == node:
+                continue
+            
+            candidate_paths = self.bgp_table[dest]
+            # Filter paths that go through this node
+            valid_paths = [
+                p for p in candidate_paths 
+                if len(p['path']) > 0 and p['path'][0] == node
+            ]
+            
+            if not valid_paths:
+                continue
+            
+            # BGP decision process (simplified)
+            best_path = self._select_best_bgp_path(valid_paths)
+            
+            if best_path:
+                route_entry = RouteEntry(
+                    destination=dest,
+                    next_hop=best_path['attributes']['next_hop'],
+                    metric=best_path['attributes']['med'],
+                    interface=0,
+                    path=best_path['path'],
+                    route_source="BGP"
+                )
+                routing_table.add_route(route_entry)
+    
+    def _select_best_bgp_path(self, candidate_paths: List[Dict]) -> Optional[Dict]:
+        """Select best path using BGP decision criteria."""
+        if not candidate_paths:
+            return None
+        
+        # BGP path selection criteria (simplified):
+        # 1. Highest Weight
+        # 2. Highest Local Preference
+        # 3. Locally originated paths
+        # 4. Shortest AS Path
+        # 5. Lowest MED
+        
+        best_path = candidate_paths[0]
+        
+        for candidate in candidate_paths[1:]:
+            # Compare weights
+            if candidate['attributes']['weight'] > best_path['attributes']['weight']:
+                best_path = candidate
+                continue
+            elif candidate['attributes']['weight'] < best_path['attributes']['weight']:
+                continue
+            
+            # Compare local preference
+            if candidate['attributes']['local_preference'] > best_path['attributes']['local_preference']:
+                best_path = candidate
+                continue
+            elif candidate['attributes']['local_preference'] < best_path['attributes']['local_preference']:
+                continue
+            
+            # Compare AS path length
+            if len(candidate['attributes']['as_path']) < len(best_path['attributes']['as_path']):
+                best_path = candidate
+                continue
+            elif len(candidate['attributes']['as_path']) > len(best_path['attributes']['as_path']):
+                continue
+            
+            # Compare MED
+            if candidate['attributes']['med'] < best_path['attributes']['med']:
+                best_path = candidate
+        
+        return best_path
+    
+    def _get_path_cost(self, path: List[int]) -> float:
+        """BGP cost based on policy and path attributes."""
+        # Simplified BGP cost calculation
+        as_path_length = len(path)
+        med_penalty = as_path_length * 10
+        return float(med_penalty)
+
+
+class LoadBalancingProtocol(BaseRoutingProtocol):
+    """
+    Equal-Cost Multi-Path (ECMP) load balancing protocol.
+    
+    Distributes traffic across multiple equal-cost paths to improve
+    network utilization and provide redundancy.
+    """
+    
+    def __init__(self, max_paths: int = 4, load_balancing_method: str = 'hash', **kwargs):
+        super().__init__(**kwargs)
+        self.max_paths = max_paths
+        self.load_balancing_method = load_balancing_method
+        self.ecmp_tables = {}  # node -> {dest: [list of equal-cost paths]}
+    
+    def _compute_routes(self):
+        """Compute equal-cost multi-path routes."""
+        try:
+            self.logger.info(f"Computing ECMP routes with max {self.max_paths} paths per destination")
+            
+            n_nodes = self.network_graph.adjacency_matrix.shape[0]
+            
+            # Initialize ECMP tables
+            for node in range(n_nodes):
+                self.ecmp_tables[node] = defaultdict(list)
+            
+            # Find equal-cost paths for each source-destination pair
+            for src in range(n_nodes):
+                shortest_paths = self._find_equal_cost_paths(src)
+                self._build_ecmp_routing_table(src, shortest_paths)
+                self.update_count += 1
+            
+            self.logger.info(f"ECMP computed {self.update_count} load-balanced routing tables")
+            
+        except Exception as e:
+            self.logger.error(f"ECMP route computation failed: {str(e)}")
+            raise
+    
+    def _find_equal_cost_paths(self, src_node: int) -> Dict[int, List[Tuple[float, List[int]]]]:
+        """Find all equal-cost shortest paths from source to all destinations."""
+        n_nodes = self.network_graph.adjacency_matrix.shape[0]
+        
+        # Modified Dijkstra to find all equal-cost paths
+        distances = {node: float('inf') for node in range(n_nodes)}
+        paths = defaultdict(list)  # dest -> list of (cost, path)
+        distances[src_node] = 0
+        paths[src_node].append((0, [src_node]))
+        
+        # Priority queue: (distance, node, path)
+        pq = [(0, src_node, [src_node])]
+        
+        while pq:
+            current_dist, current_node, current_path = heapq.heappop(pq)
+            
+            if current_dist > distances[current_node]:
+                continue
+            
+            # Explore neighbors
+            adjacency = self.network_graph.adjacency_matrix
+            for neighbor in range(n_nodes):
+                if adjacency[current_node, neighbor] > 0:
+                    edge_cost = self._calculate_edge_cost(current_node, neighbor)
+                    new_dist = current_dist + edge_cost
+                    new_path = current_path + [neighbor]
+                    
+                    if new_dist < distances[neighbor]:
+                        # Found better path
+                        distances[neighbor] = new_dist
+                        paths[neighbor] = [(new_dist, new_path)]
+                        heapq.heappush(pq, (new_dist, neighbor, new_path))
+                        
+                    elif new_dist == distances[neighbor] and len(paths[neighbor]) < self.max_paths:
+                        # Found equal-cost path
+                        paths[neighbor].append((new_dist, new_path))
+                        heapq.heappush(pq, (new_dist, neighbor, new_path))
+        
+        return dict(paths)
+    
+    def _calculate_edge_cost(self, src: int, dst: int) -> float:
+        """Calculate edge cost for load balancing."""
+        # Use similar cost calculation as OSPF but consider current load
+        base_cost = 10.0  # Default cost
+        
+        # Get edge features if available
+        edge_idx = self._get_edge_index(src, dst)
+        if edge_idx is not None and edge_idx < len(self.network_graph.edge_features):
+            # Consider bandwidth and current utilization
+            bandwidth = self.network_graph.edge_features[edge_idx, 0]
+            utilization = self.network_graph.edge_features[edge_idx, 1] if self.network_graph.edge_features.shape[1] > 1 else 0.5
+            
+            # Cost increases with utilization
+            base_cost = (1.0 / max(bandwidth, 0.1)) * (1.0 + utilization)
+        
+        return base_cost
+    
+    def _get_edge_index(self, src: int, dst: int) -> Optional[int]:
+        """Get edge index in edge_features array."""
+        # Simplified edge index calculation
+        adjacency = self.network_graph.adjacency_matrix
+        edge_count = 0
+        
+        for i in range(adjacency.shape[0]):
+            for j in range(i + 1, adjacency.shape[1]):
+                if adjacency[i, j] > 0:
+                    if (i == src and j == dst) or (i == dst and j == src):
+                        return edge_count
+                    edge_count += 1
+        
+        return None
+    
+    def _build_ecmp_routing_table(self, src_node: int, shortest_paths: Dict[int, List[Tuple[float, List[int]]]]):
+        """Build ECMP routing table with multiple paths per destination."""
+        routing_table = self.routing_tables[src_node]
+        
+        for dest_node, path_list in shortest_paths.items():
+            if dest_node != src_node and path_list:
+                # Store all equal-cost paths
+                self.ecmp_tables[src_node][dest_node] = path_list
+                
+                # For primary routing table, use first path
+                cost, path = path_list[0]
+                if len(path) > 1:
+                    next_hop = path[1]
+                    
+                    route_entry = RouteEntry(
+                        destination=dest_node,
+                        next_hop=next_hop,
+                        metric=cost,
+                        interface=0,
+                        path=path,
+                        route_source="ECMP"
+                    )
+                    routing_table.add_route(route_entry)
+    
+    def _get_routing_decision(self, src_node: int, dst_node: int) -> int:
+        """Get load-balanced routing decision."""
+        if src_node in self.ecmp_tables and dst_node in self.ecmp_tables[src_node]:
+            equal_paths = self.ecmp_tables[src_node][dst_node]
+            
+            if equal_paths:
+                if self.load_balancing_method == 'round_robin':
+                    # Round-robin selection
+                    path_idx = hash((src_node, dst_node)) % len(equal_paths)
+                elif self.load_balancing_method == 'hash':
+                    # Hash-based selection (flow-based)
+                    path_idx = hash((src_node, dst_node, time.time() // 60)) % len(equal_paths)
+                else:
+                    # Random selection
+                    import random
+                    path_idx = random.randint(0, len(equal_paths) - 1)
+                
+                _, selected_path = equal_paths[path_idx]
+                if len(selected_path) > 1:
+                    return selected_path[1]  # Next hop
+        
+        return super()._get_routing_decision(src_node, dst_node)
+    
+    def _get_path_cost(self, path: List[int]) -> float:
+        """Calculate path cost considering load balancing."""
+        total_cost = 0.0
+        for i in range(len(path) - 1):
+            total_cost += self._calculate_edge_cost(path[i], path[i + 1])
+        return total_cost
+    
+    def get_load_balancing_stats(self) -> Dict[str, Any]:
+        """Get load balancing statistics."""
+        stats = {
+            'total_ecmp_groups': sum(len(dest_paths) for dest_paths in self.ecmp_tables.values()),
+            'avg_paths_per_destination': 0,
+            'max_paths_used': 0,
+            'load_balancing_method': self.load_balancing_method
+        }
+        
+        path_counts = []
+        for node_ecmp in self.ecmp_tables.values():
+            for dest_paths in node_ecmp.values():
+                path_count = len(dest_paths)
+                path_counts.append(path_count)
+                stats['max_paths_used'] = max(stats['max_paths_used'], path_count)
+        
+        if path_counts:
+            stats['avg_paths_per_destination'] = sum(path_counts) / len(path_counts)
+        
+        return stats
+
+
+# Factory functions for easy protocol creation
+def create_ospf_protocol(**kwargs) -> OSPFProtocol:
+    """Create OSPF protocol instance."""
+    return OSPFProtocol(**kwargs)
+
+
+def create_rip_protocol(**kwargs) -> RIPProtocol:
+    """Create RIP protocol instance."""
+    return RIPProtocol(**kwargs)
+
+
+def create_bgp_protocol(**kwargs) -> BGPProtocol:
+    """Create BGP protocol instance."""
+    return BGPProtocol(**kwargs)
+
+
+def create_load_balancing_protocol(**kwargs) -> LoadBalancingProtocol:
+    """Create load balancing protocol instance."""
+    return LoadBalancingProtocol(**kwargs)
+
+
+if __name__ == "__main__":
+    # Test routing protocols
+    logger = get_logger(__name__)
+    logger.info("Testing routing protocol baselines...")
+    
+    # Create test network
+    n_nodes = 5
+    adjacency = np.array([
+        [0, 1, 1, 0, 0],
+        [1, 0, 1, 1, 0],
+        [1, 1, 0, 1, 1],
+        [0, 1, 1, 0, 1],
+        [0, 0, 1, 1, 0]
+    ], dtype=float)
+    
+    node_features = np.random.random((n_nodes, 3))
+    edge_features = np.random.random((np.sum(adjacency > 0), 2))
+    
+    test_network = NetworkGraph(
+        adjacency_matrix=adjacency,
+        node_features=node_features,
+        edge_features=edge_features
+    )
+    
+    # Generate test data
+    np.random.seed(42)
+    X_test = np.random.randint(0, n_nodes, (50, 2))  # src-dst pairs
+    y_test = np.random.randint(0, n_nodes, 50)  # routing decisions
+    
+    # Test protocols
+    protocols = {
+        'OSPF': create_ospf_protocol(network_graph=test_network),
+        'RIP': create_rip_protocol(network_graph=test_network),
+        'BGP': create_bgp_protocol(network_graph=test_network),
+        'ECMP': create_load_balancing_protocol(network_graph=test_network, max_paths=3)
+    }
+    
+    for name, protocol in protocols.items():
+        try:
+            logger.info(f"Testing {name} protocol...")
+            
+            # Train protocol
+            start_time = time.time()
+            protocol.fit(X_test, y_test)
+            training_time = time.time() - start_time
+            
+            # Test predictions
+            predictions = protocol.predict(X_test[:10])
+            probabilities = protocol.predict_proba(X_test[:10])
+            
+            # Get protocol statistics
+            stats = protocol.get_routing_statistics()
+            
+            logger.info(f"{name}: Convergence time={training_time:.3f}s, "
+                       f"Updates={stats['update_count']}, "
+                       f"Routes={stats['total_routes']}, "
+                       f"Predictions shape={predictions.shape}")
+            
+            # Additional stats for load balancing
+            if hasattr(protocol, 'get_load_balancing_stats'):
+                lb_stats = protocol.get_load_balancing_stats()
+                logger.info(f"{name} Load Balancing: ECMP groups={lb_stats['total_ecmp_groups']}, "
+                           f"Avg paths={lb_stats['avg_paths_per_destination']:.1f}")
+            
+        except Exception as e:
+            logger.error(f"Error testing {name}: {str(e)}")
+    
+    logger.info("Routing protocol testing completed!") 

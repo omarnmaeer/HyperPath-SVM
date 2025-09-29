@@ -1,0 +1,649 @@
+# File: hyperpath_svm/utils/logging_utils.py
+
+"""
+Comprehensive Logging Utilities for HyperPath-SVM
+
+This module provides advanced logging capabilities with multiple handlers,
+structured logging, performance monitoring, and experiment tracking.
+
+"""
+
+import logging
+import logging.handlers
+import sys
+import os
+import json
+import time
+import traceback
+import threading
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Union, TextIO
+from dataclasses import dataclass, field, asdict
+from contextlib import contextmanager
+from datetime import datetime
+import functools
+import inspect
+import warnings
+warnings.filterwarnings('ignore')
+
+
+@dataclass
+class LogConfig:
+    """Configuration for logging setup."""
+    
+    # Basic settings
+    level: str = "INFO"
+    format_style: str = "detailed"  # "simple", "detailed", "json"
+    
+    # File logging
+    log_file: Optional[Path] = None
+    max_file_size: int = 50 * 1024 * 1024  # 50MB
+    backup_count: int = 5
+    file_encoding: str = "utf-8"
+    
+    # Console logging
+    console_output: bool = True
+    console_colors: bool = True
+    
+    # Performance logging
+    performance_logging: bool = True
+    profile_functions: bool = False
+    memory_tracking: bool = True
+    
+    # Structured logging
+    structured_logging: bool = False
+    include_context: bool = True
+    
+    # Experiment tracking
+    experiment_logging: bool = True
+    metrics_file: Optional[Path] = None
+    
+    # Advanced settings
+    buffer_size: int = 1024
+    flush_interval: float = 5.0  # seconds
+    thread_safe: bool = True
+
+
+@dataclass
+class LogRecord:
+    
+    timestamp: float = field(default_factory=time.time)
+    level: str = ""
+    module: str = ""
+    function: str = ""
+    message: str = ""
+    context: Dict[str, Any] = field(default_factory=dict)
+    metrics: Dict[str, float] = field(default_factory=dict)
+    exception_info: Optional[str] = None
+
+
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter with color support for console output."""
+    
+    # ANSI color codes
+    COLORS = {
+        'DEBUG': '\033[36m',     # Cyan
+        'INFO': '\033[32m',      # Green
+        'WARNING': '\033[33m',   # Yellow
+        'ERROR': '\033[31m',     # Red
+        'CRITICAL': '\033[35m',  # Magenta
+    }
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    
+    def __init__(self, fmt: str, use_colors: bool = True):
+        super().__init__(fmt)
+        self.use_colors = use_colors
+    
+    def format(self, record):
+        if self.use_colors and record.levelname in self.COLORS:
+            # Add color to level name
+            record.levelname = (f"{self.COLORS[record.levelname]}{self.BOLD}"
+                              f"{record.levelname}{self.RESET}")
+            
+            # Add color to module name
+            if hasattr(record, 'name'):
+                record.name = f"\033[94m{record.name}{self.RESET}"
+        
+        return super().format(record)
+
+
+class StructuredFormatter(logging.Formatter):
+   
+    
+    def format(self, record):
+        log_entry = {
+            'timestamp': time.time(),
+            'level': record.levelname,
+            'module': record.name,
+            'message': record.getMessage(),
+            'line_number': record.lineno,
+            'function': record.funcName,
+        }
+        
+        # Add exception info if present
+        if record.exc_info:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        
+        # Add extra fields
+        for key, value in record.__dict__.items():
+            if key not in ['name', 'msg', 'args', 'levelname', 'levelno', 
+                          'pathname', 'filename', 'module', 'lineno', 
+                          'funcName', 'created', 'msecs', 'relativeCreated',
+                          'thread', 'threadName', 'processName', 'process',
+                          'exc_info', 'exc_text', 'stack_info']:
+                log_entry[key] = value
+        
+        return json.dumps(log_entry, default=str)
+
+
+class PerformanceLogger:
+    
+    
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self._function_times = {}
+        self._memory_snapshots = []
+        self._lock = threading.Lock()
+    
+    @contextmanager
+    def timer(self, operation_name: str):
+       
+        start_time = time.perf_counter()
+        start_memory = self._get_memory_usage()
+        
+        try:
+            yield
+        finally:
+            end_time = time.perf_counter()
+            end_memory = self._get_memory_usage()
+            
+            execution_time = end_time - start_time
+            memory_delta = end_memory - start_memory
+            
+            with self._lock:
+                if operation_name not in self._function_times:
+                    self._function_times[operation_name] = []
+                self._function_times[operation_name].append(execution_time)
+            
+            self.logger.debug(f"Performance: {operation_name} took {execution_time:.4f}s, "
+                            f"memory delta: {memory_delta:.2f}MB")
+    
+    def profile_function(self, func):
+       
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            func_name = f"{func.__module__}.{func.__name__}"
+            
+            with self.timer(func_name):
+                return func(*args, **kwargs)
+        
+        return wrapper
+    
+    def _get_memory_usage(self) -> float:
+        """Get current memory usage in MB."""
+        try:
+            import psutil
+            process = psutil.Process()
+            return process.memory_info().rss / (1024 * 1024)
+        except ImportError:
+            return 0.0
+    
+    def get_performance_summary(self) -> Dict[str, Any]:
+     
+        summary = {}
+        
+        with self._lock:
+            for operation, times in self._function_times.items():
+                summary[operation] = {
+                    'count': len(times),
+                    'total_time': sum(times),
+                    'average_time': sum(times) / len(times),
+                    'min_time': min(times),
+                    'max_time': max(times)
+                }
+        
+        return summary
+    
+    def log_performance_summary(self):
+        """Log performance summary."""
+        summary = self.get_performance_summary()
+        
+        if summary:
+            self.logger.info("Performance Summary:")
+            for operation, stats in summary.items():
+                self.logger.info(f"  {operation}: {stats['count']} calls, "
+                               f"avg {stats['average_time']:.4f}s, "
+                               f"total {stats['total_time']:.2f}s")
+
+
+class ExperimentLogger:
+    """Logger for experiment tracking and metrics."""
+    
+    def __init__(self, logger: logging.Logger, metrics_file: Optional[Path] = None):
+        self.logger = logger
+        self.metrics_file = metrics_file
+        self._metrics_buffer = []
+        self._experiments = {}
+        self._current_experiment = None
+        self._lock = threading.Lock()
+    
+    def start_experiment(self, experiment_name: str, config: Dict[str, Any]):
+        """Start a new experiment."""
+        with self._lock:
+            self._current_experiment = {
+                'name': experiment_name,
+                'start_time': time.time(),
+                'config': config,
+                'metrics': [],
+                'status': 'running'
+            }
+            self._experiments[experiment_name] = self._current_experiment
+        
+        self.logger.info(f"Started experiment: {experiment_name}")
+        self.logger.debug(f"Experiment config: {json.dumps(config, indent=2)}")
+    
+    def log_metric(self, name: str, value: float, step: Optional[int] = None, 
+                  context: Optional[Dict[str, Any]] = None):
+        """Log a metric value."""
+        metric_entry = {
+            'timestamp': time.time(),
+            'name': name,
+            'value': value,
+            'step': step,
+            'context': context or {}
+        }
+        
+        if self._current_experiment:
+            with self._lock:
+                self._current_experiment['metrics'].append(metric_entry)
+        
+        self._metrics_buffer.append(metric_entry)
+        
+        # Log to standard logger
+        context_str = f" ({context})" if context else ""
+        step_str = f" [step {step}]" if step is not None else ""
+        self.logger.info(f"Metric: {name} = {value:.6f}{step_str}{context_str}")
+        
+        # Flush if buffer is full
+        if len(self._metrics_buffer) >= 100:
+            self.flush_metrics()
+    
+    def log_hyperparameters(self, hyperparams: Dict[str, Any]):
+        """Log hyperparameters for current experiment."""
+        if self._current_experiment:
+            with self._lock:
+                self._current_experiment['hyperparameters'] = hyperparams
+        
+        self.logger.info(f"Hyperparameters: {json.dumps(hyperparams, indent=2)}")
+    
+    def end_experiment(self, status: str = 'completed', results: Optional[Dict[str, Any]] = None):
+        """End the current experiment."""
+        if not self._current_experiment:
+            self.logger.warning("No active experiment to end")
+            return
+        
+        with self._lock:
+            self._current_experiment['end_time'] = time.time()
+            self._current_experiment['status'] = status
+            self._current_experiment['duration'] = (
+                self._current_experiment['end_time'] - self._current_experiment['start_time']
+            )
+            
+            if results:
+                self._current_experiment['results'] = results
+        
+        self.logger.info(f"Ended experiment: {self._current_experiment['name']} "
+                        f"(status: {status}, duration: {self._current_experiment['duration']:.2f}s)")
+        
+        self.flush_metrics()
+        self._current_experiment = None
+    
+    def flush_metrics(self):
+        """Flush metrics buffer to file."""
+        if not self.metrics_file or not self._metrics_buffer:
+            return
+        
+        try:
+            self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(self.metrics_file, 'a', encoding='utf-8') as f:
+                for metric in self._metrics_buffer:
+                    f.write(json.dumps(metric, default=str) + '\n')
+            
+            self._metrics_buffer.clear()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to flush metrics: {str(e)}")
+    
+    def get_experiment_summary(self, experiment_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get experiment summary."""
+        if experiment_name:
+            return self._experiments.get(experiment_name, {})
+        else:
+            return dict(self._experiments)
+
+
+class HyperPathLogger:
+    """Main logger class for HyperPath-SVM framework."""
+    
+    def __init__(self, name: str, config: Optional[LogConfig] = None):
+        self.name = name
+        self.config = config or LogConfig()
+        self._loggers = {}
+        self._handlers = {}
+        self._performance_logger = None
+        self._experiment_logger = None
+        self._setup_complete = False
+        
+        # Setup main logger
+        self.logger = self._setup_logger(name)
+        self._setup_performance_logging()
+        self._setup_experiment_logging()
+        
+        self._setup_complete = True
+    
+    def _setup_logger(self, logger_name: str) -> logging.Logger:
+        """Setup logger with configured handlers."""
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(getattr(logging, self.config.level.upper()))
+        
+        # Prevent duplicate handlers
+        if logger.handlers:
+            logger.handlers.clear()
+        
+        # Console handler
+        if self.config.console_output:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(getattr(logging, self.config.level.upper()))
+            
+            if self.config.format_style == "json":
+                console_formatter = StructuredFormatter()
+            elif self.config.format_style == "detailed":
+                format_string = ('%(asctime)s | %(levelname)-8s | %(name)-20s | '
+                               '%(funcName)-15s:%(lineno)-3d | %(message)s')
+                console_formatter = ColoredFormatter(format_string, self.config.console_colors)
+            else:  # simple
+                format_string = '%(levelname)s - %(name)s - %(message)s'
+                console_formatter = ColoredFormatter(format_string, self.config.console_colors)
+            
+            console_handler.setFormatter(console_formatter)
+            logger.addHandler(console_handler)
+            self._handlers['console'] = console_handler
+        
+        # File handler with rotation
+        if self.config.log_file:
+            self.config.log_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            file_handler = logging.handlers.RotatingFileHandler(
+                self.config.log_file,
+                maxBytes=self.config.max_file_size,
+                backupCount=self.config.backup_count,
+                encoding=self.config.file_encoding
+            )
+            file_handler.setLevel(getattr(logging, self.config.level.upper()))
+            
+            if self.config.format_style == "json":
+                file_formatter = StructuredFormatter()
+            else:
+                format_string = ('%(asctime)s | %(levelname)-8s | %(name)-20s | '
+                               '%(funcName)-15s:%(lineno)-3d | %(message)s')
+                file_formatter = logging.Formatter(format_string)
+            
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+            self._handlers['file'] = file_handler
+        
+        # Store logger
+        self._loggers[logger_name] = logger
+        
+        return logger
+    
+    def _setup_performance_logging(self):
+        """Setup performance logging."""
+        if self.config.performance_logging:
+            self._performance_logger = PerformanceLogger(self.logger)
+    
+    def _setup_experiment_logging(self):
+        """Setup experiment logging."""
+        if self.config.experiment_logging:
+            self._experiment_logger = ExperimentLogger(self.logger, self.config.metrics_file)
+    
+    def get_logger(self, name: Optional[str] = None) -> logging.Logger:
+        """Get logger instance."""
+        logger_name = name or self.name
+        
+        if logger_name not in self._loggers:
+            return self._setup_logger(logger_name)
+        
+        return self._loggers[logger_name]
+    
+    def get_performance_logger(self) -> Optional[PerformanceLogger]:
+        """Get performance logger."""
+        return self._performance_logger
+    
+    def get_experiment_logger(self) -> Optional[ExperimentLogger]:
+        """Get experiment logger."""
+        return self._experiment_logger
+    
+    @contextmanager
+    def timer(self, operation_name: str):
+        """Context manager for timing operations."""
+        if self._performance_logger:
+            with self._performance_logger.timer(operation_name):
+                yield
+        else:
+            yield
+    
+    def profile_function(self, func):
+        """Decorator for function profiling."""
+        if self._performance_logger and self.config.profile_functions:
+            return self._performance_logger.profile_function(func)
+        return func
+    
+    def log_exception(self, exception: Exception, context: Optional[Dict[str, Any]] = None):
+        """Log exception with full traceback and context."""
+        exc_info = (type(exception), exception, exception.__traceback__)
+        
+        context_str = f"\nContext: {json.dumps(context, indent=2)}" if context else ""
+        
+        self.logger.error(f"Exception occurred: {str(exception)}{context_str}", 
+                         exc_info=exc_info)
+    
+    def log_function_entry(self, func_name: str, args: Any = None, kwargs: Any = None):
+        """Log function entry with parameters."""
+        if self.logger.isEnabledFor(logging.DEBUG):
+            args_str = f"args={args}" if args else ""
+            kwargs_str = f"kwargs={kwargs}" if kwargs else ""
+            params_str = ", ".join(filter(None, [args_str, kwargs_str]))
+            
+            self.logger.debug(f"Entering {func_name}({params_str})")
+    
+    def log_function_exit(self, func_name: str, result: Any = None, duration: Optional[float] = None):
+        """Log function exit with result and duration."""
+        if self.logger.isEnabledFor(logging.DEBUG):
+            result_str = f"result={result}" if result is not None else ""
+            duration_str = f"duration={duration:.4f}s" if duration else ""
+            info_str = ", ".join(filter(None, [result_str, duration_str]))
+            
+            self.logger.debug(f"Exiting {func_name}({info_str})")
+    
+    def shutdown(self):
+        """Shutdown logging and flush all handlers."""
+        try:
+            # Flush experiment metrics
+            if self._experiment_logger:
+                self._experiment_logger.flush_metrics()
+            
+            # Log performance summary
+            if self._performance_logger:
+                self._performance_logger.log_performance_summary()
+            
+            # Shutdown handlers
+            for handler in self._handlers.values():
+                handler.close()
+            
+            # Shutdown logging
+            logging.shutdown()
+            
+        except Exception as e:
+            print(f"Error during logging shutdown: {str(e)}")
+
+
+# Global logger registry
+_logger_registry: Dict[str, HyperPathLogger] = {}
+_default_config: Optional[LogConfig] = None
+_lock = threading.Lock()
+
+
+def setup_logging(config: Optional[LogConfig] = None, root_name: str = "hyperpath_svm"):
+  
+    global _default_config
+    
+    with _lock:
+        _default_config = config or LogConfig()
+        
+        # Setup root logger
+        if root_name not in _logger_registry:
+            _logger_registry[root_name] = HyperPathLogger(root_name, _default_config)
+
+
+def get_logger(name: str = "hyperpath_svm") -> logging.Logger:
+  
+    global _logger_registry, _default_config
+    
+    with _lock:
+        if name not in _logger_registry:
+            # Use default config if available, otherwise create basic config
+            config = _default_config or LogConfig()
+            _logger_registry[name] = HyperPathLogger(name, config)
+        
+        return _logger_registry[name].get_logger()
+
+
+def get_hyperpath_logger(name: str = "hyperpath_svm") -> HyperPathLogger:
+  
+    global _logger_registry, _default_config
+    
+    with _lock:
+        if name not in _logger_registry:
+            config = _default_config or LogConfig()
+            _logger_registry[name] = HyperPathLogger(name, config)
+        
+        return _logger_registry[name]
+
+
+def logged_function(logger_name: str = "hyperpath_svm"):
+    """Decorator for automatic function logging."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            logger = get_logger(logger_name)
+            func_name = f"{func.__module__}.{func.__name__}"
+            
+            # Log entry
+            logger.debug(f"Entering {func_name}")
+            
+            try:
+                start_time = time.perf_counter()
+                result = func(*args, **kwargs)
+                duration = time.perf_counter() - start_time
+                
+                # Log exit
+                logger.debug(f"Exiting {func_name} (duration: {duration:.4f}s)")
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Exception in {func_name}: {str(e)}", exc_info=True)
+                raise
+        
+        return wrapper
+    return decorator
+
+
+def shutdown_logging():
+    """Shutdown all logging instances."""
+    global _logger_registry
+    
+    with _lock:
+        for logger_instance in _logger_registry.values():
+            logger_instance.shutdown()
+        
+        _logger_registry.clear()
+
+
+# Context manager for temporary log level
+@contextmanager
+def temporary_log_level(level: str, logger_name: str = "hyperpath_svm"):
+    """Temporarily change log level."""
+    logger = get_logger(logger_name)
+    old_level = logger.level
+    
+    try:
+        logger.setLevel(getattr(logging, level.upper()))
+        yield
+    finally:
+        logger.setLevel(old_level)
+
+
+if __name__ == "__main__":
+    # Test logging utilities
+    print("Testing logging utilities...")
+    
+    # Setup logging with file output
+    test_config = LogConfig(
+        level="DEBUG",
+        log_file=Path("test_logs/hyperpath_test.log"),
+        console_output=True,
+        console_colors=True,
+        performance_logging=True,
+        experiment_logging=True,
+        metrics_file=Path("test_logs/metrics.jsonl")
+    )
+    
+    setup_logging(test_config)
+    logger = get_logger("test_module")
+    hyperpath_logger = get_hyperpath_logger("test_module")
+    
+    # Test basic logging
+    logger.info("Testing basic logging functionality")
+    logger.debug("Debug message with details")
+    logger.warning("Warning message")
+    
+    # Test performance logging
+    with hyperpath_logger.timer("test_operation"):
+        time.sleep(0.1)  # Simulate work
+    
+    # Test experiment logging
+    exp_logger = hyperpath_logger.get_experiment_logger()
+    if exp_logger:
+        exp_logger.start_experiment("test_experiment", {"param1": 10, "param2": "test"})
+        exp_logger.log_metric("accuracy", 0.95, step=1)
+        exp_logger.log_metric("loss", 0.05, step=1)
+        exp_logger.end_experiment("completed", {"final_accuracy": 0.97})
+    
+    # Test exception logging
+    try:
+        raise ValueError("Test exception for logging")
+    except Exception as e:
+        hyperpath_logger.log_exception(e, {"context": "testing"})
+    
+    # Test function decorator
+    @logged_function("test_module")
+    def test_function(x, y=10):
+        time.sleep(0.05)
+        return x + y
+    
+    result = test_function(5, y=15)
+    logger.info(f"Function result: {result}")
+    
+    # Get performance summary
+    perf_logger = hyperpath_logger.get_performance_logger()
+    if perf_logger:
+        perf_logger.log_performance_summary()
+    
+    print("Logging utilities test completed!")
+    
+    # Cleanup
+    shutdown_logging() 

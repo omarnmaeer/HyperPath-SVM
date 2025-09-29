@@ -1,0 +1,701 @@
+# File: hyperpath_svm/baselines/neural_networks.py
+
+"""
+Neural Network Baseline Models for HyperPath-SVM Comparison
+
+This module implements state-of-the-art neural network baselines for network routing:
+- GNN: Graph Neural Network for network topology learning
+- LSTM: Long Short-Term Memory for temporal pattern modeling
+- TARGCN: Temporal Attention-based Routing Graph Convolutional Network
+- DMGFNet: Dynamic Multi-Grained Fusion Network
+- BehaviorNet: Network Behavior Analysis Network
+
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Adam, SGD
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch_geometric.nn import GCNConv, GATConv, GraphConv, global_mean_pool
+from torch_geometric.data import Data, Batch
+import logging
+from typing import Dict, List, Tuple, Optional, Any, Union
+from abc import ABC, abstractmethod
+import time
+from dataclasses import dataclass
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
+import warnings
+warnings.filterwarnings('ignore')
+
+from ..utils.logging_utils import get_logger
+
+
+@dataclass
+class TrainingConfig:
+    
+    batch_size: int = 128
+    learning_rate: float = 0.001
+    epochs: int = 100
+    patience: int = 10
+    weight_decay: float = 1e-4
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    verbose: bool = True
+    early_stopping: bool = True
+
+
+class BaseNeuralNetwork(BaseEstimator, ClassifierMixin, ABC):
+    
+    
+    def __init__(self, training_config: Optional[TrainingConfig] = None, **kwargs):
+        self.training_config = training_config or TrainingConfig()
+        self.logger = get_logger(__name__)
+        self.device = torch.device(self.training_config.device)
+        self.model = None
+        self.optimizer = None
+        self.scaler = StandardScaler()
+        self.is_fitted = False
+        self.training_history = {'loss': [], 'accuracy': [], 'val_loss': [], 'val_accuracy': []}
+        
+        # Set model-specific parameters
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+    
+    @abstractmethod
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+        
+        pass
+    
+    def fit(self, X: np.ndarray, y: np.ndarray, X_val: Optional[np.ndarray] = None, 
+            y_val: Optional[np.ndarray] = None) -> 'BaseNeuralNetwork':
+       
+        try:
+            self.logger.info(f"Training {self.__class__.__name__} model")
+            
+            # Prepare data
+            X_scaled = self._prepare_features(X)
+            y_tensor = torch.LongTensor(y)
+            
+            # Validation data
+            if X_val is not None and y_val is not None:
+                X_val_scaled = self.scaler.transform(X_val)
+                X_val_tensor = torch.FloatTensor(X_val_scaled)
+                y_val_tensor = torch.LongTensor(y_val)
+                val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+                val_loader = DataLoader(val_dataset, batch_size=self.training_config.batch_size)
+            else:
+                val_loader = None
+            
+            # Build model
+            input_dim = X_scaled.shape[1]
+            output_dim = len(np.unique(y))
+            self.model = self._build_model(input_dim, output_dim).to(self.device)
+            
+            # Setup optimizer
+            self.optimizer = Adam(
+                self.model.parameters(), 
+                lr=self.training_config.learning_rate,
+                weight_decay=self.training_config.weight_decay
+            )
+            
+            # Create data loader
+            X_tensor = torch.FloatTensor(X_scaled)
+            train_dataset = TensorDataset(X_tensor, y_tensor)
+            train_loader = DataLoader(
+                train_dataset, 
+                batch_size=self.training_config.batch_size, 
+                shuffle=True
+            )
+            
+            # Training loop
+            best_val_loss = float('inf')
+            patience_counter = 0
+            
+            for epoch in range(self.training_config.epochs):
+                # Training phase
+                train_loss, train_acc = self._train_epoch(train_loader)
+                self.training_history['loss'].append(train_loss)
+                self.training_history['accuracy'].append(train_acc)
+                
+                # Validation phase
+                if val_loader is not None:
+                    val_loss, val_acc = self._validate_epoch(val_loader)
+                    self.training_history['val_loss'].append(val_loss)
+                    self.training_history['val_accuracy'].append(val_acc)
+                    
+                    # Early stopping
+                    if self.training_config.early_stopping:
+                        if val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            patience_counter = 0
+                            # Save best model state
+                            torch.save(self.model.state_dict(), 'best_model.pth')
+                        else:
+                            patience_counter += 1
+                            if patience_counter >= self.training_config.patience:
+                                self.logger.info(f"Early stopping at epoch {epoch}")
+                                # Load best model
+                                self.model.load_state_dict(torch.load('best_model.pth'))
+                                break
+                
+                # Logging
+                if self.training_config.verbose and epoch % 10 == 0:
+                    log_msg = f"Epoch {epoch}: Loss={train_loss:.4f}, Acc={train_acc:.4f}"
+                    if val_loader is not None:
+                        log_msg += f", Val_Loss={val_loss:.4f}, Val_Acc={val_acc:.4f}"
+                    self.logger.info(log_msg)
+            
+            self.is_fitted = True
+            self.logger.info(f"Training completed for {self.__class__.__name__}")
+            return self
+            
+        except Exception as e:
+            self.logger.error(f"Training failed for {self.__class__.__name__}: {str(e)}")
+            raise
+    
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted before prediction")
+        
+        try:
+            self.model.eval()
+            X_scaled = self.scaler.transform(X)
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model(X_tensor)
+                predictions = torch.argmax(outputs, dim=1).cpu().numpy()
+            
+            return predictions
+            
+        except Exception as e:
+            self.logger.error(f"Prediction failed: {str(e)}")
+            raise
+    
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted before prediction")
+        
+        try:
+            self.model.eval()
+            X_scaled = self.scaler.transform(X)
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model(X_tensor)
+                probabilities = F.softmax(outputs, dim=1).cpu().numpy()
+            
+            return probabilities
+            
+        except Exception as e:
+            self.logger.error(f"Probability prediction failed: {str(e)}")
+            raise
+    
+    def _prepare_features(self, X: np.ndarray) -> np.ndarray:
+       
+        if not self.is_fitted:
+            X_scaled = self.scaler.fit_transform(X)
+        else:
+            X_scaled = self.scaler.transform(X)
+        return X_scaled
+    
+    def _train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
+       
+        self.model.train()
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for batch_X, batch_y in train_loader:
+            batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+            
+            self.optimizer.zero_grad()
+            outputs = self.model(batch_X)
+            loss = F.cross_entropy(outputs, batch_y)
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += batch_y.size(0)
+            correct += (predicted == batch_y).sum().item()
+        
+        avg_loss = total_loss / len(train_loader)
+        accuracy = correct / total
+        return avg_loss, accuracy
+    
+    def _validate_epoch(self, val_loader: DataLoader) -> Tuple[float, float]:
+        """Validate for one epoch."""
+        self.model.eval()
+        total_loss = 0.0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(self.device), batch_y.to(self.device)
+                
+                outputs = self.model(batch_X)
+                loss = F.cross_entropy(outputs, batch_y)
+                
+                total_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                total += batch_y.size(0)
+                correct += (predicted == batch_y).sum().item()
+        
+        avg_loss = total_loss / len(val_loader)
+        accuracy = correct / total
+        return avg_loss, accuracy
+
+
+class GNNModel(BaseNeuralNetwork):
+    """Graph Neural Network for network topology learning."""
+    
+    def __init__(self, hidden_dim: int = 64, num_layers: int = 3, 
+                 dropout: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+    
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+      
+        return GNNNetwork(input_dim, self.hidden_dim, output_dim, 
+                         self.num_layers, self.dropout)
+
+
+class GNNNetwork(nn.Module):
+  
+    
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
+                 num_layers: int, dropout: float):
+        super().__init__()
+        self.num_layers = num_layers
+        
+        # Graph convolution layers
+        self.convs = nn.ModuleList()
+        self.convs.append(GCNConv(input_dim, hidden_dim))
+        
+        for _ in range(num_layers - 2):
+            self.convs.append(GCNConv(hidden_dim, hidden_dim))
+        
+        self.convs.append(GCNConv(hidden_dim, hidden_dim))
+        
+        # Output layers
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, output_dim)
+        )
+        
+        self.dropout = dropout
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # For non-graph data, treat as fully connected graph
+        batch_size = x.size(0)
+        
+        # Create edge indices for fully connected graph
+        edge_index = torch.combinations(torch.arange(batch_size), 2).t()
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+        
+        # Apply graph convolutions
+        for conv in self.convs[:-1]:
+            x = conv(x, edge_index)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        # Final convolution
+        x = self.convs[-1](x, edge_index)
+        
+        # Global pooling (mean of all nodes)
+        x = torch.mean(x, dim=0, keepdim=True)
+        x = x.repeat(batch_size, 1)
+        
+        # Classification
+        return self.classifier(x)
+
+
+class LSTMModel(BaseNeuralNetwork):
+    """LSTM for temporal pattern modeling."""
+    
+    def __init__(self, hidden_dim: int = 128, num_layers: int = 2, 
+                 dropout: float = 0.1, sequence_length: int = 10, **kwargs):
+        super().__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.sequence_length = sequence_length
+    
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+       
+        return LSTMNetwork(input_dim, self.hidden_dim, output_dim,
+                          self.num_layers, self.dropout)
+    
+    def _prepare_features(self, X: np.ndarray) -> np.ndarray:
+        
+        X_scaled = super()._prepare_features(X)
+        
+        # Reshape for LSTM: (batch_size, seq_len, feature_dim)
+        batch_size, feature_dim = X_scaled.shape
+        
+        # Create sequences by repeating features (simplified approach)
+        # In practice, you'd use actual temporal sequences
+        X_seq = np.repeat(X_scaled[:, np.newaxis, :], self.sequence_length, axis=1)
+        
+        return X_seq
+
+
+class LSTMNetwork(nn.Module):
+    
+    
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
+                 num_layers: int, dropout: float):
+        super().__init__()
+        
+        self.lstm = nn.LSTM(
+            input_dim, hidden_dim, num_layers,
+            batch_first=True, dropout=dropout if num_layers > 1 else 0
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, output_dim)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # LSTM forward
+        lstm_out, (hidden, cell) = self.lstm(x)
+        
+        # Use last time step output
+        last_output = lstm_out[:, -1, :]
+        
+        # Classification
+        return self.classifier(last_output)
+
+
+class TARGCNModel(BaseNeuralNetwork):
+   
+    
+    def __init__(self, hidden_dim: int = 64, attention_heads: int = 4,
+                 num_layers: int = 3, dropout: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.attention_heads = attention_heads
+        self.num_layers = num_layers
+        self.dropout = dropout
+    
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+       
+        return TARGCNNetwork(input_dim, self.hidden_dim, output_dim,
+                            self.attention_heads, self.num_layers, self.dropout)
+
+
+class TARGCNNetwork(nn.Module):
+   
+    
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
+                 attention_heads: int, num_layers: int, dropout: float):
+        super().__init__()
+        
+        # Graph attention layers
+        self.gat_layers = nn.ModuleList()
+        self.gat_layers.append(GATConv(input_dim, hidden_dim // attention_heads, 
+                                      heads=attention_heads, dropout=dropout))
+        
+        for _ in range(num_layers - 2):
+            self.gat_layers.append(GATConv(hidden_dim, hidden_dim // attention_heads,
+                                          heads=attention_heads, dropout=dropout))
+        
+        self.gat_layers.append(GATConv(hidden_dim, hidden_dim, heads=1, dropout=dropout))
+        
+        # Temporal attention
+        self.temporal_attention = TemporalAttentionLayer(hidden_dim)
+        
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, output_dim)
+        )
+        
+        self.dropout = dropout
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.size(0)
+        
+        # Create edge indices for graph attention
+        edge_index = torch.combinations(torch.arange(batch_size), 2).t()
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+        
+        # Apply graph attention layers
+        for gat in self.gat_layers[:-1]:
+            x = gat(x, edge_index)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        # Final GAT layer
+        x = self.gat_layers[-1](x, edge_index)
+        
+        # Temporal attention
+        x = self.temporal_attention(x)
+        
+        # Global pooling and classification
+        x = torch.mean(x, dim=0, keepdim=True)
+        x = x.repeat(batch_size, 1)
+        
+        return self.classifier(x)
+
+
+class TemporalAttentionLayer(nn.Module):
+    
+    
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=4, batch_first=True)
+        self.norm = nn.LayerNorm(hidden_dim)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Add temporal dimension
+        x = x.unsqueeze(1)  # (batch_size, 1, hidden_dim)
+        
+        # Self-attention
+        attn_output, _ = self.attention(x, x, x)
+        
+        # Residual connection and normalization
+        x = self.norm(x + attn_output)
+        
+        # Remove temporal dimension
+        return x.squeeze(1)
+
+
+class DMGFNetModel(BaseNeuralNetwork):
+    
+    
+    def __init__(self, hidden_dim: int = 128, num_experts: int = 4,
+                 dropout: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.hidden_dim = hidden_dim
+        self.num_experts = num_experts
+        self.dropout = dropout
+    
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+        
+        return DMGFNetNetwork(input_dim, self.hidden_dim, output_dim,
+                             self.num_experts, self.dropout)
+
+
+class DMGFNetNetwork(nn.Module):
+    
+    
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int,
+                 num_experts: int, dropout: float):
+        super().__init__()
+        
+        self.num_experts = num_experts
+        
+        # Expert networks
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ) for _ in range(num_experts)
+        ])
+        
+        # Gating network
+        self.gate = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, num_experts),
+            nn.Softmax(dim=1)
+        )
+        
+        # Final classifier
+        self.classifier = nn.Linear(hidden_dim // 2, output_dim)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Get expert outputs
+        expert_outputs = []
+        for expert in self.experts:
+            expert_outputs.append(expert(x))
+        
+        expert_outputs = torch.stack(expert_outputs, dim=1)  # (batch_size, num_experts, hidden_dim//2)
+        
+        # Get gating weights
+        gate_weights = self.gate(x)  # (batch_size, num_experts)
+        gate_weights = gate_weights.unsqueeze(2)  # (batch_size, num_experts, 1)
+        
+        # Weighted fusion
+        fused_output = torch.sum(expert_outputs * gate_weights, dim=1)
+        
+        # Final classification
+        return self.classifier(fused_output)
+
+
+class BehaviorNetModel(BaseNeuralNetwork):
+    
+    
+    def __init__(self, embedding_dim: int = 64, num_behaviors: int = 8,
+                 hidden_dim: int = 128, dropout: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.embedding_dim = embedding_dim
+        self.num_behaviors = num_behaviors
+        self.hidden_dim = hidden_dim
+        self.dropout = dropout
+    
+    def _build_model(self, input_dim: int, output_dim: int) -> nn.Module:
+        
+        return BehaviorNetNetwork(input_dim, self.embedding_dim, 
+                                 self.num_behaviors, self.hidden_dim,
+                                 output_dim, self.dropout)
+
+
+class BehaviorNetNetwork(nn.Module):
+    
+    
+    def __init__(self, input_dim: int, embedding_dim: int, num_behaviors: int,
+                 hidden_dim: int, output_dim: int, dropout: float):
+        super().__init__()
+        
+        # Feature embedding
+        self.feature_embedding = nn.Linear(input_dim, embedding_dim)
+        
+        # Behavior pattern modules
+        self.behavior_modules = nn.ModuleList([
+            BehaviorModule(embedding_dim, hidden_dim // num_behaviors, dropout)
+            for _ in range(num_behaviors)
+        ])
+        
+        # Behavior fusion
+        self.behavior_fusion = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # Classifier
+        self.classifier = nn.Linear(hidden_dim // 2, output_dim)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Feature embedding
+        embedded = self.feature_embedding(x)
+        embedded = F.relu(embedded)
+        
+        # Process through behavior modules
+        behavior_outputs = []
+        for behavior_module in self.behavior_modules:
+            behavior_outputs.append(behavior_module(embedded))
+        
+        # Concatenate behavior outputs
+        fused_behaviors = torch.cat(behavior_outputs, dim=1)
+        
+        # Behavior fusion
+        fused_output = self.behavior_fusion(fused_behaviors)
+        
+        # Classification
+        return self.classifier(fused_output)
+
+
+class BehaviorModule(nn.Module):
+    
+    
+    def __init__(self, input_dim: int, output_dim: int, dropout: float):
+        super().__init__()
+        
+        self.layers = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(input_dim // 2, output_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+
+# Factory functions for easy model creation
+def create_gnn_model(**kwargs) -> GNNModel:
+    
+    return GNNModel(**kwargs)
+
+
+def create_lstm_model(**kwargs) -> LSTMModel:
+    
+    return LSTMModel(**kwargs)
+
+
+def create_targcn_model(**kwargs) -> TARGCNModel:
+    
+    return TARGCNModel(**kwargs)
+
+
+def create_dmgfnet_model(**kwargs) -> DMGFNetModel:
+   
+    return DMGFNetModel(**kwargs)
+
+
+def create_behaviornet_model(**kwargs) -> BehaviorNetModel:
+    
+    return BehaviorNetModel(**kwargs)
+
+
+if __name__ == "__main__":
+    # Test neural network models
+    logger = get_logger(__name__)
+    logger.info("Testing neural network baseline models...")
+    
+    # Generate test data
+    np.random.seed(42)
+    X_train = np.random.random((1000, 20))
+    y_train = np.random.randint(0, 3, 1000)
+    X_test = np.random.random((200, 20))
+    y_test = np.random.randint(0, 3, 200)
+    
+    # Test each model
+    models = {
+        'GNN': create_gnn_model(hidden_dim=32),
+        'LSTM': create_lstm_model(hidden_dim=64, num_layers=1),
+        'TARGCN': create_targcn_model(hidden_dim=32, attention_heads=2),
+        'DMGFNet': create_dmgfnet_model(hidden_dim=64, num_experts=2),
+        'BehaviorNet': create_behaviornet_model(embedding_dim=32, num_behaviors=4)
+    }
+    
+    for name, model in models.items():
+        try:
+            logger.info(f"Testing {name} model...")
+            
+            # Configure for quick testing
+            model.training_config.epochs = 5
+            model.training_config.verbose = False
+            
+            # Train and test
+            start_time = time.time()
+            model.fit(X_train, y_train)
+            training_time = time.time() - start_time
+            
+            # Test predictions
+            predictions = model.predict(X_test)
+            probabilities = model.predict_proba(X_test)
+            accuracy = accuracy_score(y_test, predictions)
+            
+            logger.info(f"{name}: Training time={training_time:.2f}s, "
+                       f"Accuracy={accuracy:.4f}, "
+                       f"Proba shape={probabilities.shape}")
+            
+        except Exception as e:
+            logger.error(f"Error testing {name}: {str(e)}")
+    
+    logger.info("Neural network baseline testing completed!") 

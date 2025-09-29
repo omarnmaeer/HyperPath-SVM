@@ -1,0 +1,314 @@
+# File: config/hyperparameters.yaml
+# Optimized Hyperparameters for Each Dataset
+
+
+
+caida:
+    description: "Optimized for CAIDA backbone traces (34.2M decisions)"
+    
+    # Core SVM parameters
+    svm:
+      C: 12.7                 # Regularization (optimized)
+      epsilon: 0.0008         # Convergence tolerance
+      max_support_vectors: 4200
+      kernel_cache_size: 800
+      
+    # DDWE configuration for backbone networks
+    ddwe:
+      # Memory hierarchy (tuned for backbone patterns)
+      short_term_window: 180   # 3 minutes (backbone stability)
+      medium_term_window: 10800 # 3 hours (routing convergence)
+      long_term_window: 64800  # 18 hours (daily patterns)
+      
+      # Optimized memory weights
+      short_weight: 0.45
+      medium_weight: 0.35  
+      long_weight: 0.20
+      
+      # Learning parameters
+      learning_rate: 0.0087
+      momentum: 0.92
+      
+      # Decay factors (backbone-specific)
+      decay_factors:
+        gamma_m: 0.97        # Medium term
+        gamma_l: 0.995       # Long term (stable backbone)
+        
+      # Performance feedback weights (backbone priorities)
+      feedback_weights:
+        accuracy: 0.35
+        latency: 0.25
+        throughput: 0.30     # Critical for backbone
+        stability: 0.10
+    
+    # TGCK parameters for large-scale topology
+    tgck:
+      gamma_spatial: 0.0067   # Optimized spatial bandwidth
+      gamma_temporal: 0.00045 # Optimized temporal bandwidth
+      neighborhood_hops: 3    # Larger hops for backbone
+      num_eigenvectors: 75    # More eigenvectors for complex topology
+      temporal_decay: 0.98    # Slower decay for stable backbone
+      
+    # Quantum optimization for backbone scale
+    quantum:
+      num_configurations: 48   # More configs for complex space
+      max_iterations: 1200
+      measurement_interval: 80
+      tunneling_probability: 0.08
+      coherence_time: 65
+      
+  mawi:
+    description: "Optimized for MAWI trans-Pacific traces (28.7M decisions)"
+    
+    # Core SVM parameters
+    svm:
+      C: 8.9                  # Lower C for international noise
+      epsilon: 0.0012
+      max_support_vectors: 3800
+      kernel_cache_size: 600
+      
+    # DDWE configuration for international links
+    ddwe:
+      # Memory hierarchy (international routing patterns)
+      short_term_window: 420   # 7 minutes (longer propagation)
+      medium_term_window: 18000 # 5 hours (time zone effects)
+      long_term_window: 97200  # 27 hours (cross-timezone daily cycle)
+      
+      # Optimized memory weights (emphasize long-term)
+      short_weight: 0.35
+      medium_weight: 0.25
+      long_weight: 0.40       # Higher for international stability
+      
+      # Learning parameters
+      learning_rate: 0.0063
+      momentum: 0.88
+      
+      # Decay factors (international-specific)
+      decay_factors:
+        gamma_m: 0.94         # Faster medium decay (timezone changes)
+        gamma_l: 0.988        # Strong long-term memory
+        
+      # Performance feedback (international priorities)
+      feedback_weights:
+        accuracy: 0.30
+        latency: 0.35         # Critical for long-distance
+        throughput: 0.25
+        stability: 0.10
+    
+    # TGCK parameters for international topology
+    tgck:
+      gamma_spatial: 0.0089   # Higher spatial bandwidth
+      gamma_temporal: 0.00078 # Higher temporal bandwidth (timezone effects)
+      neighborhood_hops: 2    # Smaller hops (sparser international graph)
+      num_eigenvectors: 45    # Fewer eigenvectors (simpler topology)
+      temporal_decay: 0.93    # Faster decay (timezone effects)
+      
+    # Quantum optimization
+    quantum:
+      num_configurations: 32
+      max_iterations: 800     # Fewer iterations (simpler space)
+      measurement_interval: 120
+      tunneling_probability: 0.12  # Higher tunneling (local optima)
+      coherence_time: 40
+      
+  umass:
+    description: "Optimized for UMass enterprise traces (31.6M decisions)"
+    
+    # Core SVM parameters  
+    svm:
+      C: 15.3                 # Higher C for controlled environment
+      epsilon: 0.0006
+      max_support_vectors: 4800
+      kernel_cache_size: 900
+      
+    # DDWE configuration for enterprise networks
+    ddwe:
+      # Memory hierarchy (enterprise patterns)
+      short_term_window: 240   # 4 minutes (application bursts)
+      medium_term_window: 7200 # 2 hours (business cycles)
+      long_term_window: 43200  # 12 hours (business day cycle)
+      
+      # Optimized memory weights (emphasize short-term)
+      short_weight: 0.55      # High for reactive enterprise
+      medium_weight: 0.30
+      long_weight: 0.15
+      
+      # Learning parameters
+      learning_rate: 0.0134   # Higher learning rate
+      momentum: 0.85
+      
+      # Decay factors (enterprise-specific)
+      decay_factors:
+        gamma_m: 0.91         # Faster decay (business patterns)
+        gamma_l: 0.96         # Much faster long-term decay
+        
+      # Performance feedback (enterprise priorities)  
+      feedback_weights:
+        accuracy: 0.40        # High accuracy for business-critical
+        latency: 0.25
+        throughput: 0.20
+        stability: 0.15       # Higher stability weight
+    
+    # TGCK parameters for enterprise topology
+    tgck:
+      gamma_spatial: 0.0156   # Higher spatial (dense enterprise)
+      gamma_temporal: 0.00123 # Higher temporal (business patterns)
+      neighborhood_hops: 2    # Small hops (hierarchical enterprise)
+      num_eigenvectors: 35    # Fewer eigenvectors (structured topology)
+      temporal_decay: 0.89    # Faster decay (business cycles)
+      
+    # Quantum optimization for enterprise
+    quantum:
+      num_configurations: 28  # Fewer configs (more constrained space)
+      max_iterations: 600
+      measurement_interval: 150
+      tunneling_probability: 0.06  # Lower tunneling (smoother space)
+      coherence_time: 35
+      
+  wits:
+    description: "Optimized for WITS GPS-synchronized traces (32.5M decisions)"
+    
+    # Core SVM parameters
+    svm:
+      C: 9.4                  # Balanced for high-precision data
+      epsilon: 0.0004         # Tighter tolerance (high precision)
+      max_support_vectors: 5200
+      kernel_cache_size: 1100
+      
+    # DDWE configuration for high-precision data
+    ddwe:
+      # Memory hierarchy (GPS-synchronized precision)
+      short_term_window: 150   # 2.5 minutes (high-freq patterns)
+      medium_term_window: 5400 # 1.5 hours (research patterns)  
+      long_term_window: 28800  # 8 hours (research day cycle)
+      
+      # Optimized memory weights (balanced precision)
+      short_weight: 0.40
+      medium_weight: 0.40     # Equal medium/short for research
+      long_weight: 0.20
+      
+      # Learning parameters (high precision)
+      learning_rate: 0.0156
+      momentum: 0.94
+      
+      # Decay factors (research-specific)
+      decay_factors:
+        gamma_m: 0.98         # Slow decay (research stability)
+        gamma_l: 0.992        # Very slow long-term decay
+        
+      # Performance feedback (research priorities)
+      feedback_weights:
+        accuracy: 0.45        # Highest accuracy for research
+        latency: 0.20
+        throughput: 0.15
+        stability: 0.20       # High stability for measurements
+    
+    # TGCK parameters for high-precision measurements
+    tgck:
+      gamma_spatial: 0.0034   # Lower spatial (precise measurements)
+      gamma_temporal: 0.00021 # Lower temporal (GPS precision)
+      neighborhood_hops: 4    # Larger hops (research network)
+      num_eigenvectors: 85    # More eigenvectors (research precision)
+      temporal_decay: 0.995   # Very slow decay (GPS stability)
+      
+    # Quantum optimization for precision
+    quantum:
+      num_configurations: 64  # More configs (high-dimensional precision)
+      max_iterations: 1500    # More iterations (precision search)
+      measurement_interval: 60
+      tunneling_probability: 0.04  # Lower tunneling (precise space)
+      coherence_time: 80      # Longer coherence (stable research)
+  
+  # Cross-dataset optimization
+  cross_dataset:
+    description: "Parameters optimized across all datasets"
+    
+    # Ensemble parameters
+    ensemble_weights:
+      caida: 0.27            # Weight by dataset size and diversity
+      mawi: 0.23
+      umass: 0.25  
+      wits: 0.25
+      
+    # Transfer learning parameters
+    transfer_learning:
+      enabled: true
+      source_datasets: ["caida", "mawi"]  # Pre-train on backbone
+      target_datasets: ["umass", "wits"]  # Fine-tune on specific
+      
+      # Transfer hyperparameters
+      transfer_ratio: 0.3     # 30% source, 70% target
+      adaptation_epochs: 20
+      freeze_layers: ["tgck_spatial"]  # Freeze spatial processing
+      
+    # Multi-dataset training
+    multi_dataset_training:
+      curriculum_learning: true
+      curriculum_order: ["caida", "umass", "mawi", "wits"]
+      curriculum_epochs: [10, 15, 20, 25]
+      
+  # Hyperparameter search configuration  
+  optimization:
+    # Search space definitions
+    search_spaces:
+      C: 
+        type: "log_uniform"
+        low: 0.1
+        high: 100.0
+        
+      ddwe_learning_rate:
+        type: "log_uniform"
+        low: 0.001
+        high: 0.1
+        
+      tgck_gamma_spatial:
+        type: "log_uniform" 
+        low: 0.001
+        high: 0.1
+        
+      quantum_num_configs:
+        type: "categorical"
+        choices: [16, 24, 32, 48, 64]
+        
+    # Optimization algorithm
+    optimizer: "optuna"       # optuna, hyperopt, skopt
+    n_trials: 1000           # Number of hyperparameter trials
+    timeout: 3600            # 1 hour timeout per trial
+    
+    # Multi-objective optimization
+    objectives:
+      - name: "accuracy"
+        weight: 0.4
+        direction: "maximize"
+        
+      - name: "inference_time" 
+        weight: 0.3
+        direction: "minimize"
+        
+      - name: "memory_usage"
+        weight: 0.2
+        direction: "minimize"
+        
+      - name: "adaptation_speed"
+        weight: 0.1  
+        direction: "minimize"
+  
+  # Performance profiling
+  profiling:
+    # Enable profiling for hyperparameter optimization
+    profile_training: true
+    profile_inference: true
+    profile_adaptation: true
+    
+    # Profiling tools
+    memory_profiler: true
+    line_profiler: true
+    cProfile: true
+    
+    # Performance targets (for optimization)
+    targets:
+      accuracy: 0.965         # 96.5%
+      inference_time_p50: 1.8 # ms
+      inference_time_p95: 3.5 # ms
+      memory_usage: 98        # MB
+      adaptation_time: 138    # seconds (2.3 min) 

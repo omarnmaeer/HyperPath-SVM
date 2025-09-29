@@ -1,0 +1,827 @@
+# File: hyperpath_svm/evaluation/cross_validation.py
+
+"""
+Temporal Cross-Validation Framework for HyperPath-SVM
+
+This module implements sophisticated cross-validation techniques designed specifically
+for time-series network data. It ensures temporal consistency while providing robust
+statistical evaluation of routing models.
+
+"""
+
+import numpy as np
+import pandas as pd
+import logging
+from typing import Dict, List, Tuple, Optional, Any, Union, Iterator, Generator
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+import time
+from collections import defaultdict, deque
+import warnings
+warnings.filterwarnings('ignore')
+
+from sklearn.model_selection import BaseCrossValidator, TimeSeriesSplit
+from sklearn.base import BaseEstimator, clone
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.utils import indexable
+from scipy import stats
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from .metrics import ComprehensiveMetricsEvaluator, EvaluationResults
+from ..utils.logging_utils import get_logger
+
+
+@dataclass
+class ValidationConfig:
+    """Configuration for cross-validation parameters."""
+    n_splits: int = 5
+    test_size: float = 0.2
+    gap: int = 0  # Gap between train and test sets
+    max_train_size: Optional[int] = None
+    min_train_size: Optional[int] = None
+    temporal_buffer: int = 10  # Buffer for temporal dependencies
+    shuffle: bool = False  # Generally False for temporal data
+    random_state: int = 42
+    
+    # Statistical testing
+    significance_level: float = 0.05
+    correction_method: str = 'bonferroni'  # Multiple comparison correction
+    
+    # Performance analysis
+    stability_threshold: float = 0.05  # Maximum allowed performance variance
+    min_samples_per_split: int = 100
+
+
+@dataclass
+class CVResult:
+    """Result from a single cross-validation fold."""
+    fold_idx: int
+    train_indices: np.ndarray
+    test_indices: np.ndarray
+    train_score: float
+    test_score: float
+    fit_time: float
+    score_time: float
+    model_params: Dict[str, Any] = field(default_factory=dict)
+    detailed_metrics: Optional[Dict[str, float]] = None
+    predictions: Optional[np.ndarray] = None
+    probabilities: Optional[np.ndarray] = None
+
+
+@dataclass
+class CVResults:
+    """Complete cross-validation results."""
+    model_name: str
+    cv_method: str
+    config: ValidationConfig
+    fold_results: List[CVResult] = field(default_factory=list)
+    
+    # Aggregate statistics
+    mean_test_score: float = 0.0
+    std_test_score: float = 0.0
+    mean_train_score: float = 0.0
+    std_train_score: float = 0.0
+    mean_fit_time: float = 0.0
+    mean_score_time: float = 0.0
+    
+    # Statistical analysis
+    statistical_tests: Dict[str, Any] = field(default_factory=dict)
+    stability_analysis: Dict[str, Any] = field(default_factory=dict)
+    bias_analysis: Dict[str, Any] = field(default_factory=dict)
+    
+    def compute_aggregates(self):
+        """Compute aggregate statistics from fold results."""
+        if not self.fold_results:
+            return
+        
+        test_scores = [r.test_score for r in self.fold_results]
+        train_scores = [r.train_score for r in self.fold_results]
+        fit_times = [r.fit_time for r in self.fold_results]
+        score_times = [r.score_time for r in self.fold_results]
+        
+        self.mean_test_score = np.mean(test_scores)
+        self.std_test_score = np.std(test_scores)
+        self.mean_train_score = np.mean(train_scores)
+        self.std_train_score = np.std(train_scores)
+        self.mean_fit_time = np.mean(fit_times)
+        self.mean_score_time = np.mean(score_times)
+
+
+class BaseTemporalValidator(BaseCrossValidator, ABC):
+    """Abstract base class for temporal cross-validation methods."""
+    
+    def __init__(self, config: Optional[ValidationConfig] = None):
+        self.config = config or ValidationConfig()
+        self.logger = get_logger(__name__)
+    
+    @abstractmethod
+    def _generate_temporal_splits(self, n_samples: int, 
+                                 timestamps: Optional[np.ndarray] = None) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+        """Generate temporal train/test splits."""
+        pass
+    
+    def split(self, X, y=None, groups=None, timestamps=None):
+        """Generate temporal splits for cross-validation."""
+        X, y, groups = indexable(X, y, groups)
+        n_samples = X.shape[0]
+        
+        for train_idx, test_idx in self._generate_temporal_splits(n_samples, timestamps):
+            yield train_idx, test_idx
+    
+    def get_n_splits(self, X=None, y=None, groups=None):
+        """Return the number of splitting iterations."""
+        return self.config.n_splits
+    
+    def _validate_split_sizes(self, train_idx: np.ndarray, test_idx: np.ndarray) -> bool:
+        """Validate split sizes meet minimum requirements."""
+        return (len(train_idx) >= self.config.min_samples_per_split and 
+                len(test_idx) >= self.config.min_samples_per_split)
+
+
+class TemporalCrossValidator(BaseTemporalValidator):
+    """
+    Temporal cross-validator that respects time dependencies.
+    
+    Ensures that test data always comes after training data in time,
+    preventing data leakage and providing realistic evaluation.
+    """
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    def _generate_temporal_splits(self, n_samples: int, 
+                                 timestamps: Optional[np.ndarray] = None) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+        """Generate temporal cross-validation splits."""
+        try:
+            # If timestamps provided, sort by time
+            if timestamps is not None:
+                time_indices = np.argsort(timestamps)
+            else:
+                # Assume data is already chronologically ordered
+                time_indices = np.arange(n_samples)
+            
+            # Calculate split sizes
+            test_size = int(n_samples * self.config.test_size)
+            
+            if self.config.max_train_size:
+                max_train_size = min(self.config.max_train_size, n_samples - test_size)
+            else:
+                max_train_size = n_samples - test_size
+            
+            # Generate splits
+            for i in range(self.config.n_splits):
+                # Calculate split boundaries
+                test_start = n_samples - test_size - (i * test_size // self.config.n_splits)
+                test_end = test_start + test_size
+                
+                # Ensure we don't go below minimum
+                test_start = max(test_size, test_start)
+                test_end = min(n_samples, test_end)
+                
+                if test_start >= test_end:
+                    continue
+                
+                # Add temporal buffer
+                train_end = max(0, test_start - self.config.gap - self.config.temporal_buffer)
+                
+                # Determine train start
+                if self.config.max_train_size:
+                    train_start = max(0, train_end - self.config.max_train_size)
+                else:
+                    train_start = 0
+                
+                # Create indices
+                train_idx = time_indices[train_start:train_end]
+                test_idx = time_indices[test_start:test_end]
+                
+                # Validate split sizes
+                if self._validate_split_sizes(train_idx, test_idx):
+                    yield train_idx, test_idx
+                    
+        except Exception as e:
+            self.logger.error(f"Error generating temporal splits: {str(e)}")
+            raise
+
+
+class BlockedTimeSeriesSplit(BaseTemporalValidator):
+    """
+    Blocked time series cross-validation with overlapping prevention.
+    
+    Creates non-overlapping blocks of time series data for training and testing,
+    which is particularly useful for network data with strong temporal correlations.
+    """
+    
+    def __init__(self, block_size: Optional[int] = None, **kwargs):
+        super().__init__(**kwargs)
+        self.block_size = block_size
+    
+    def _generate_temporal_splits(self, n_samples: int, 
+                                 timestamps: Optional[np.ndarray] = None) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+        """Generate blocked time series splits."""
+        try:
+            if self.block_size is None:
+                self.block_size = n_samples // (self.config.n_splits + 1)
+            
+            # Sort indices by timestamp if provided
+            if timestamps is not None:
+                time_indices = np.argsort(timestamps)
+            else:
+                time_indices = np.arange(n_samples)
+            
+            # Generate blocked splits
+            for i in range(self.config.n_splits):
+                # Calculate block boundaries
+                test_start = i * self.block_size
+                test_end = min((i + 1) * self.block_size, n_samples)
+                
+                if test_end - test_start < self.config.min_samples_per_split:
+                    continue
+                
+                # Create training set from all other blocks
+                train_indices = []
+                
+                # Add blocks before test block
+                for j in range(i):
+                    block_start = j * self.block_size
+                    block_end = min((j + 1) * self.block_size, n_samples)
+                    train_indices.extend(range(block_start, block_end))
+                
+                # Add blocks after test block (with temporal buffer)
+                for j in range(i + 1, self.config.n_splits + 1):
+                    block_start = j * self.block_size + self.config.temporal_buffer
+                    block_end = min((j + 1) * self.block_size, n_samples)
+                    if block_start < block_end:
+                        train_indices.extend(range(block_start, block_end))
+                
+                # Create final indices
+                train_idx = time_indices[train_indices] if train_indices else np.array([])
+                test_idx = time_indices[test_start:test_end]
+                
+                if self._validate_split_sizes(train_idx, test_idx):
+                    yield train_idx, test_idx
+                    
+        except Exception as e:
+            self.logger.error(f"Error generating blocked splits: {str(e)}")
+            raise
+
+
+class NetworkAwareValidator(BaseTemporalValidator):
+    """
+    Network topology-aware cross-validation.
+    
+    Considers network structure when creating splits to ensure
+    representative coverage of different network regions.
+    """
+    
+    def __init__(self, network_graph=None, node_features=None, **kwargs):
+        super().__init__(**kwargs)
+        self.network_graph = network_graph
+        self.node_features = node_features
+        self.node_clusters = None
+    
+    def _generate_temporal_splits(self, n_samples: int, 
+                                 timestamps: Optional[np.ndarray] = None) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+        """Generate network-aware temporal splits."""
+        try:
+            # Cluster network nodes if graph is available
+            if self.network_graph is not None:
+                self._cluster_network_nodes()
+            
+            # Sort by timestamp if provided
+            if timestamps is not None:
+                time_indices = np.argsort(timestamps)
+            else:
+                time_indices = np.arange(n_samples)
+            
+            # Generate splits considering network structure
+            for i in range(self.config.n_splits):
+                train_idx, test_idx = self._create_network_aware_split(
+                    time_indices, i, n_samples
+                )
+                
+                if self._validate_split_sizes(train_idx, test_idx):
+                    yield train_idx, test_idx
+                    
+        except Exception as e:
+            self.logger.error(f"Error generating network-aware splits: {str(e)}")
+            # Fallback to temporal splits
+            yield from super()._generate_temporal_splits(n_samples, timestamps)
+    
+    def _cluster_network_nodes(self):
+        """Cluster network nodes for balanced splitting."""
+        try:
+            from sklearn.cluster import KMeans
+            
+            if self.node_features is not None:
+                # Use node features for clustering
+                features = self.node_features
+            else:
+                # Use adjacency matrix as features
+                features = self.network_graph.adjacency_matrix
+            
+            # Cluster nodes
+            n_clusters = min(self.config.n_splits, features.shape[0])
+            kmeans = KMeans(n_clusters=n_clusters, random_state=self.config.random_state)
+            self.node_clusters = kmeans.fit_predict(features)
+            
+            self.logger.info(f"Clustered network into {n_clusters} groups")
+            
+        except Exception as e:
+            self.logger.warning(f"Node clustering failed: {str(e)}")
+            self.node_clusters = None
+    
+    def _create_network_aware_split(self, time_indices: np.ndarray, 
+                                  split_idx: int, n_samples: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Create split that considers network topology."""
+        # If clustering failed, use temporal split
+        if self.node_clusters is None:
+            test_size = int(n_samples * self.config.test_size)
+            test_start = split_idx * test_size
+            test_end = min((split_idx + 1) * test_size, n_samples)
+            
+            train_idx = time_indices[:test_start]
+            test_idx = time_indices[test_start:test_end]
+            
+            return train_idx, test_idx
+        
+        # Create network-aware split
+        test_cluster = split_idx % len(np.unique(self.node_clusters))
+        
+        # Select samples based on cluster assignment
+        # This is simplified - in practice, you'd map samples to nodes
+        cluster_mask = np.random.choice([True, False], n_samples, 
+                                       p=[0.2, 0.8] if split_idx == test_cluster else [0.8, 0.2])
+        
+        test_idx = time_indices[cluster_mask]
+        train_idx = time_indices[~cluster_mask]
+        
+        return train_idx, test_idx
+
+
+class TemporalCrossValidationRunner:
+    """Main runner for temporal cross-validation experiments."""
+    
+    def __init__(self, config: Optional[ValidationConfig] = None):
+        self.config = config or ValidationConfig()
+        self.logger = get_logger(__name__)
+        self.metrics_evaluator = ComprehensiveMetricsEvaluator()
+    
+    def cross_validate_model(self, estimator: BaseEstimator, X: np.ndarray, y: np.ndarray,
+                           cv_method: str = 'temporal', timestamps: Optional[np.ndarray] = None,
+                           **kwargs) -> CVResults:
+        """
+        Perform cross-validation on a model with temporal awareness.
+        
+        Args:
+            estimator: Model to cross-validate
+            X: Feature matrix
+            y: Target vector
+            cv_method: Cross-validation method ('temporal', 'blocked', 'network_aware')
+            timestamps: Optional timestamps for temporal ordering
+            **kwargs: Additional parameters for specific CV methods
+            
+        Returns:
+            CVResults containing detailed cross-validation results
+        """
+        try:
+            self.logger.info(f"Starting {cv_method} cross-validation")
+            start_time = time.time()
+            
+            # Create appropriate cross-validator
+            cv_splitter = self._create_cv_splitter(cv_method, **kwargs)
+            
+            # Initialize results
+            results = CVResults(
+                model_name=estimator.__class__.__name__,
+                cv_method=cv_method,
+                config=self.config
+            )
+            
+            # Perform cross-validation
+            fold_idx = 0
+            for train_idx, test_idx in cv_splitter.split(X, y, timestamps=timestamps):
+                fold_result = self._evaluate_fold(
+                    estimator, X, y, train_idx, test_idx, fold_idx
+                )
+                results.fold_results.append(fold_result)
+                fold_idx += 1
+                
+                self.logger.info(f"Fold {fold_idx}: Train={fold_result.train_score:.4f}, "
+                               f"Test={fold_result.test_score:.4f}")
+            
+            # Compute aggregate statistics
+            results.compute_aggregates()
+            
+            # Perform statistical analysis
+            results.statistical_tests = self._perform_statistical_tests(results)
+            results.stability_analysis = self._analyze_stability(results)
+            results.bias_analysis = self._analyze_bias(results)
+            
+            total_time = time.time() - start_time
+            self.logger.info(f"Cross-validation completed in {total_time:.2f}s")
+            self.logger.info(f"Mean test score: {results.mean_test_score:.4f} ± {results.std_test_score:.4f}")
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Cross-validation failed: {str(e)}")
+            raise
+    
+    def _create_cv_splitter(self, cv_method: str, **kwargs) -> BaseTemporalValidator:
+        """Create appropriate cross-validation splitter."""
+        if cv_method == 'temporal':
+            return TemporalCrossValidator(config=self.config)
+        elif cv_method == 'blocked':
+            return BlockedTimeSeriesSplit(config=self.config, **kwargs)
+        elif cv_method == 'network_aware':
+            return NetworkAwareValidator(config=self.config, **kwargs)
+        else:
+            raise ValueError(f"Unknown CV method: {cv_method}")
+    
+    def _evaluate_fold(self, estimator: BaseEstimator, X: np.ndarray, y: np.ndarray,
+                      train_idx: np.ndarray, test_idx: np.ndarray, fold_idx: int) -> CVResult:
+        """Evaluate a single cross-validation fold."""
+        try:
+            # Clone estimator to avoid state contamination
+            fold_estimator = clone(estimator)
+            
+            # Split data
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+            
+            # Train model
+            fit_start = time.time()
+            fold_estimator.fit(X_train, y_train)
+            fit_time = time.time() - fit_start
+            
+            # Evaluate model
+            score_start = time.time()
+            y_train_pred = fold_estimator.predict(X_train)
+            y_test_pred = fold_estimator.predict(X_test)
+            score_time = time.time() - score_start
+            
+            # Calculate scores
+            train_score = accuracy_score(y_train, y_train_pred)
+            test_score = accuracy_score(y_test, y_test_pred)
+            
+            # Detailed metrics
+            detailed_metrics = self._compute_detailed_metrics(y_test, y_test_pred)
+            
+            # Probabilities if available
+            probabilities = None
+            if hasattr(fold_estimator, 'predict_proba'):
+                try:
+                    probabilities = fold_estimator.predict_proba(X_test)
+                except Exception:
+                    pass
+            
+            # Model parameters
+            model_params = {}
+            if hasattr(fold_estimator, 'get_params'):
+                model_params = fold_estimator.get_params()
+            
+            return CVResult(
+                fold_idx=fold_idx,
+                train_indices=train_idx,
+                test_indices=test_idx,
+                train_score=train_score,
+                test_score=test_score,
+                fit_time=fit_time,
+                score_time=score_time,
+                model_params=model_params,
+                detailed_metrics=detailed_metrics,
+                predictions=y_test_pred,
+                probabilities=probabilities
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Fold {fold_idx} evaluation failed: {str(e)}")
+            # Return error result
+            return CVResult(
+                fold_idx=fold_idx,
+                train_indices=train_idx,
+                test_indices=test_idx,
+                train_score=0.0,
+                test_score=0.0,
+                fit_time=0.0,
+                score_time=0.0
+            )
+    
+    def _compute_detailed_metrics(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        """Compute detailed metrics for fold evaluation."""
+        try:
+            metrics = {}
+            
+            # Basic classification metrics
+            metrics['accuracy'] = accuracy_score(y_true, y_pred)
+            metrics['precision'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+            metrics['recall'] = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+            metrics['f1_score'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+            
+            # Class-specific metrics for binary classification
+            if len(np.unique(y_true)) == 2:
+                metrics['precision_class_1'] = precision_score(y_true, y_pred, pos_label=1, zero_division=0)
+                metrics['recall_class_1'] = recall_score(y_true, y_pred, pos_label=1, zero_division=0)
+                metrics['f1_class_1'] = f1_score(y_true, y_pred, pos_label=1, zero_division=0)
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.warning(f"Detailed metrics computation failed: {str(e)}")
+            return {'accuracy': accuracy_score(y_true, y_pred)}
+    
+    def _perform_statistical_tests(self, results: CVResults) -> Dict[str, Any]:
+        """Perform statistical significance tests."""
+        try:
+            test_scores = [r.test_score for r in results.fold_results]
+            train_scores = [r.train_score for r in results.fold_results]
+            
+            statistical_tests = {}
+            
+            # Normality test
+            shapiro_stat, shapiro_p = stats.shapiro(test_scores)
+            statistical_tests['normality_test'] = {
+                'statistic': float(shapiro_stat),
+                'p_value': float(shapiro_p),
+                'is_normal': shapiro_p > self.config.significance_level
+            }
+            
+            # One-sample t-test against zero performance
+            t_stat, t_p = stats.ttest_1samp(test_scores, 0)
+            statistical_tests['significance_test'] = {
+                'statistic': float(t_stat),
+                'p_value': float(t_p),
+                'is_significant': t_p < self.config.significance_level
+            }
+            
+            # Paired t-test between train and test scores
+            if len(train_scores) == len(test_scores):
+                paired_t, paired_p = stats.ttest_rel(train_scores, test_scores)
+                statistical_tests['overfitting_test'] = {
+                    'statistic': float(paired_t),
+                    'p_value': float(paired_p),
+                    'overfitting_detected': paired_p < self.config.significance_level and paired_t > 0
+                }
+            
+            # Confidence interval for mean test score
+            confidence_level = 1 - self.config.significance_level
+            ci_lower, ci_upper = stats.t.interval(
+                confidence_level, 
+                len(test_scores) - 1, 
+                loc=np.mean(test_scores), 
+                scale=stats.sem(test_scores)
+            )
+            statistical_tests['confidence_interval'] = {
+                'lower': float(ci_lower),
+                'upper': float(ci_upper),
+                'confidence_level': confidence_level
+            }
+            
+            return statistical_tests
+            
+        except Exception as e:
+            self.logger.error(f"Statistical tests failed: {str(e)}")
+            return {}
+    
+    def _analyze_stability(self, results: CVResults) -> Dict[str, Any]:
+        """Analyze performance stability across folds."""
+        try:
+            test_scores = [r.test_score for r in results.fold_results]
+            
+            stability_analysis = {
+                'coefficient_of_variation': np.std(test_scores) / np.mean(test_scores) if np.mean(test_scores) > 0 else float('inf'),
+                'score_range': float(np.max(test_scores) - np.min(test_scores)),
+                'is_stable': np.std(test_scores) <= self.config.stability_threshold,
+                'outlier_folds': []
+            }
+            
+            # Identify outlier folds
+            q1, q3 = np.percentile(test_scores, [25, 75])
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+            
+            for i, score in enumerate(test_scores):
+                if score < lower_bound or score > upper_bound:
+                    stability_analysis['outlier_folds'].append({
+                        'fold_idx': i,
+                        'score': score,
+                        'type': 'low' if score < lower_bound else 'high'
+                    })
+            
+            return stability_analysis
+            
+        except Exception as e:
+            self.logger.error(f"Stability analysis failed: {str(e)}")
+            return {}
+    
+    def _analyze_bias(self, results: CVResults) -> Dict[str, Any]:
+        """Analyze potential bias in cross-validation results."""
+        try:
+            train_scores = [r.train_score for r in results.fold_results]
+            test_scores = [r.test_score for r in results.fold_results]
+            
+            bias_analysis = {
+                'mean_train_test_gap': float(np.mean(train_scores) - np.mean(test_scores)),
+                'consistent_overfit': all(train > test for train, test in zip(train_scores, test_scores)),
+                'consistent_underfit': all(train < test for train, test in zip(train_scores, test_scores)),
+                'variance_bias_tradeoff': {
+                    'bias_squared': float((np.mean(test_scores) - results.mean_test_score) ** 2),
+                    'variance': float(np.var(test_scores)),
+                    'total_error': float(np.var(test_scores) + (np.mean(test_scores) - results.mean_test_score) ** 2)
+                }
+            }
+            
+            # Temporal bias analysis
+            if len(test_scores) > 2:
+                # Check for trends across folds
+                fold_indices = np.arange(len(test_scores))
+                slope, intercept, r_value, p_value, std_err = stats.linregress(fold_indices, test_scores)
+                
+                bias_analysis['temporal_trend'] = {
+                    'slope': float(slope),
+                    'r_squared': float(r_value ** 2),
+                    'p_value': float(p_value),
+                    'significant_trend': p_value < self.config.significance_level,
+                    'trend_direction': 'improving' if slope > 0 else 'degrading' if slope < 0 else 'stable'
+                }
+            
+            return bias_analysis
+            
+        except Exception as e:
+            self.logger.error(f"Bias analysis failed: {str(e)}")
+            return {}
+    
+    def compare_models(self, cv_results_list: List[CVResults]) -> Dict[str, Any]:
+        """Compare multiple models using cross-validation results."""
+        try:
+            if len(cv_results_list) < 2:
+                raise ValueError("Need at least 2 models for comparison")
+            
+            comparison = {
+                'models': [r.model_name for r in cv_results_list],
+                'mean_scores': [r.mean_test_score for r in cv_results_list],
+                'std_scores': [r.std_test_score for r in cv_results_list],
+                'statistical_comparisons': {},
+                'effect_sizes': {},
+                'rankings': []
+            }
+            
+            # Pairwise statistical comparisons
+            for i, results_i in enumerate(cv_results_list):
+                for j, results_j in enumerate(cv_results_list[i+1:], start=i+1):
+                    scores_i = [r.test_score for r in results_i.fold_results]
+                    scores_j = [r.test_score for r in results_j.fold_results]
+                    
+                    # Paired t-test
+                    if len(scores_i) == len(scores_j):
+                        t_stat, p_value = stats.ttest_rel(scores_i, scores_j)
+                        
+                        # Effect size (Cohen's d)
+                        pooled_std = np.sqrt(((len(scores_i) - 1) * np.var(scores_i, ddof=1) + 
+                                            (len(scores_j) - 1) * np.var(scores_j, ddof=1)) / 
+                                           (len(scores_i) + len(scores_j) - 2))
+                        effect_size = (np.mean(scores_i) - np.mean(scores_j)) / pooled_std if pooled_std > 0 else 0
+                        
+                        comparison_key = f"{results_i.model_name}_vs_{results_j.model_name}"
+                        comparison['statistical_comparisons'][comparison_key] = {
+                            't_statistic': float(t_stat),
+                            'p_value': float(p_value),
+                            'significant': p_value < self.config.significance_level,
+                            'winner': results_i.model_name if t_stat > 0 else results_j.model_name
+                        }
+                        
+                        comparison['effect_sizes'][comparison_key] = {
+                            'cohens_d': float(effect_size),
+                            'magnitude': self._interpret_effect_size(effect_size)
+                        }
+            
+            # Overall ranking
+            model_scores = [(r.model_name, r.mean_test_score, r.std_test_score) 
+                           for r in cv_results_list]
+            model_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            comparison['rankings'] = [
+                {'rank': i + 1, 'model': name, 'score': score, 'std': std}
+                for i, (name, score, std) in enumerate(model_scores)
+            ]
+            
+            return comparison
+            
+        except Exception as e:
+            self.logger.error(f"Model comparison failed: {str(e)}")
+            return {}
+    
+    def _interpret_effect_size(self, cohens_d: float) -> str:
+        """Interpret Cohen's d effect size."""
+        abs_d = abs(cohens_d)
+        if abs_d < 0.2:
+            return "negligible"
+        elif abs_d < 0.5:
+            return "small"
+        elif abs_d < 0.8:
+            return "medium"
+        else:
+            return "large"
+    
+    def save_cv_results(self, results: CVResults, filepath: str):
+        """Save cross-validation results to file."""
+        try:
+            import pickle
+            with open(filepath, 'wb') as f:
+                pickle.dump(results, f)
+            
+            self.logger.info(f"CV results saved to {filepath}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save CV results: {str(e)}")
+    
+    def load_cv_results(self, filepath: str) -> CVResults:
+        """Load cross-validation results from file."""
+        try:
+            import pickle
+            with open(filepath, 'rb') as f:
+                results = pickle.load(f)
+            
+            self.logger.info(f"CV results loaded from {filepath}")
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load CV results: {str(e)}")
+            raise
+
+
+def create_temporal_cv_runner(config_dict: Optional[Dict[str, Any]] = None) -> TemporalCrossValidationRunner:
+    """
+    Factory function to create configured temporal cross-validation runner.
+    
+    Args:
+        config_dict: Configuration dictionary
+        
+    Returns:
+        Configured TemporalCrossValidationRunner instance
+    """
+    if config_dict:
+        config = ValidationConfig(**config_dict)
+    else:
+        config = ValidationConfig()
+    
+    return TemporalCrossValidationRunner(config)
+
+
+if __name__ == "__main__":
+    # Test temporal cross-validation
+    logger = get_logger(__name__)
+    logger.info("Testing temporal cross-validation framework...")
+    
+    # Generate test data with temporal structure
+    np.random.seed(42)
+    n_samples = 1000
+    n_features = 10
+    
+    # Create temporal features
+    timestamps = np.linspace(0, 100, n_samples)
+    X = np.random.random((n_samples, n_features))
+    
+    # Add temporal dependencies
+    for i in range(1, n_samples):
+        X[i] = 0.7 * X[i] + 0.3 * X[i-1]
+    
+    # Create labels with temporal trend
+    y = (X[:, 0] + 0.1 * timestamps / 100 + np.random.normal(0, 0.1, n_samples) > 0.5).astype(int)
+    
+    # Create mock model
+    from sklearn.dummy import DummyClassifier
+    model = DummyClassifier(strategy='most_frequent', random_state=42)
+    
+    # Test cross-validation
+    cv_runner = create_temporal_cv_runner({
+        'n_splits': 3,
+        'test_size': 0.2,
+        'significance_level': 0.05
+    })
+    
+    # Test different CV methods
+    cv_methods = ['temporal', 'blocked']
+    
+    for method in cv_methods:
+        try:
+            logger.info(f"Testing {method} cross-validation...")
+            
+            results = cv_runner.cross_validate_model(
+                model, X, y, cv_method=method, timestamps=timestamps
+            )
+            
+            logger.info(f"{method} CV Results:")
+            logger.info(f"  Mean test score: {results.mean_test_score:.4f} ± {results.std_test_score:.4f}")
+            logger.info(f"  Mean fit time: {results.mean_fit_time:.4f}s")
+            logger.info(f"  Stability: {results.stability_analysis.get('is_stable', 'Unknown')}")
+            
+            if results.statistical_tests:
+                logger.info(f"  Statistically significant: {results.statistical_tests.get('significance_test', {}).get('is_significant', 'Unknown')}")
+            
+        except Exception as e:
+            logger.error(f"Error testing {method}: {str(e)}")
+    
+    logger.info("Temporal cross-validation testing completed!")

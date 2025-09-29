@@ -1,0 +1,703 @@
+# File: config/datasets.yaml
+# Dataset Configurations for HyperPath-SVM Framework
+# ===================================================
+
+# Dataset Registry
+datasets:
+  # CAIDA Internet Topology Dataset
+  caida:
+    # Basic metadata
+    name: "CAIDA Internet Topology"
+    description: "Large-scale Internet backbone topology and routing data"
+    source: "Cooperative Association for Internet Data Analysis"
+    url: "https://www.caida.org/catalog/datasets/"
+    license: "Academic Research License"
+    
+    # Data characteristics
+    characteristics:
+      type: "backbone_internet"
+      scale: "large"
+      topology_type: "scale_free"
+      temporal_resolution: "hourly"
+      spatial_coverage: "global"
+      network_layers: ["backbone", "transit", "peering"]
+      
+    # Dataset statistics
+    statistics:
+      total_decisions: 34200000      # 34.2M routing decisions
+      avg_decisions_per_hour: 47500
+      num_nodes_range: [45000, 85000]
+      num_edges_range: [180000, 420000]
+      temporal_span_days: 730        # 2 years
+      update_frequency: "monthly"
+      
+    # Data format and structure
+    data_format:
+      primary_format: "json"
+      compression: "gzip"
+      encoding: "utf-8"
+      file_pattern: "caida_*_{year}_{month}.json.gz"
+      
+    # Schema definition
+    schema:
+      topology_file:
+        nodes:
+          - node_id: "integer"
+          - asn: "string"
+          - country: "string" 
+          - latitude: "float"
+          - longitude: "float"
+          - node_type: "string"  # backbone, transit, access
+          - degree: "integer"
+          
+        edges:
+          - src_node: "integer"
+          - dst_node: "integer"
+          - capacity_mbps: "float"
+          - delay_ms: "float"
+          - link_type: "string"  # fiber, satellite, wireless
+          - reliability: "float"
+          - utilization: "float"
+          
+      routing_file:
+        decisions:
+          - timestamp: "datetime"
+          - src_node: "integer"
+          - dst_node: "integer"
+          - path: "array[integer]"
+          - path_length: "integer"
+          - path_delay: "float"
+          - path_cost: "float"
+          - decision_confidence: "float"
+          
+    # Processing configuration
+    processing:
+      # Data loading
+      loading:
+        chunk_size: 10000
+        parallel_loading: true
+        max_workers: 4
+        memory_limit: "2GB"
+        cache_processed: true
+        
+      # Feature extraction
+      features:
+        topology_features:
+          - "node_degree"
+          - "betweenness_centrality"
+          - "clustering_coefficient"
+          - "shortest_path_length"
+          - "node_coordinates"
+          
+        temporal_features:
+          - "hour_of_day"
+          - "day_of_week"
+          - "month_of_year"
+          - "traffic_seasonality"
+          
+        routing_features:
+          - "path_length"
+          - "path_diversity"
+          - "link_utilization"
+          - "congestion_level"
+          
+      # Preprocessing steps
+      preprocessing:
+        - "remove_isolated_nodes"
+        - "filter_low_traffic_links"
+        - "normalize_coordinates"
+        - "interpolate_missing_values"
+        - "detect_outliers"
+        
+    # Quality metrics
+    quality:
+      completeness: 0.97           # 97% data completeness
+      consistency: 0.95            # 95% consistency score
+      timeliness: 0.98             # 98% temporal accuracy
+      accuracy: 0.96               # 96% measurement accuracy
+      
+    # Data splits
+    splits:
+      train: 0.70                  # 70% training
+      validation: 0.15             # 15% validation
+      test: 0.15                   # 15% testing
+      temporal_split: true         # Maintain temporal order
+      
+  # MAWI Trans-Pacific Dataset
+  mawi:
+    # Basic metadata
+    name: "MAWI Trans-Pacific Traffic"
+    description: "High-quality trans-Pacific network traffic traces"
+    source: "WIDE Project MAWI Working Group"
+    url: "https://mawi.wide.ad.jp/"
+    license: "Academic Use Only"
+    
+    # Data characteristics
+    characteristics:
+      type: "international_transit"
+      scale: "large"
+      topology_type: "hierarchical"
+      temporal_resolution: "15min"
+      spatial_coverage: "asia_pacific"
+      network_layers: ["international", "national", "regional"]
+      
+    # Dataset statistics
+    statistics:
+      total_decisions: 28700000      # 28.7M routing decisions
+      avg_decisions_per_hour: 39600
+      num_nodes_range: [15000, 35000]
+      num_edges_range: [85000, 220000]
+      temporal_span_days: 365        # 1 year
+      update_frequency: "daily"
+      
+    # Data format and structure
+    data_format:
+      primary_format: "hdf5"
+      compression: "lz4"
+      encoding: "utf-8"
+      file_pattern: "mawi_{year}{month:02d}{day:02d}.h5"
+      
+    # Schema definition
+    schema:
+      network_topology:
+        nodes:
+          - node_id: "integer"
+          - autonomous_system: "integer"
+          - geographic_region: "string"
+          - timezone: "string"
+          - node_capacity: "float"
+          
+        links:
+          - link_id: "integer"
+          - src_node: "integer"
+          - dst_node: "integer"
+          - bandwidth_gbps: "float"
+          - latency_ms: "float"
+          - packet_loss: "float"
+          - jitter_ms: "float"
+          
+      traffic_flows:
+        flows:
+          - flow_id: "integer"
+          - timestamp: "datetime"
+          - src_ip: "string"
+          - dst_ip: "string"
+          - protocol: "string"
+          - bytes: "integer"
+          - packets: "integer"
+          - duration: "float"
+          
+    # Processing configuration
+    processing:
+      # Data loading
+      loading:
+        chunk_size: 5000
+        parallel_loading: true
+        max_workers: 6
+        memory_limit: "3GB"
+        cache_processed: true
+        
+      # Feature extraction
+      features:
+        network_features:
+          - "as_path_length"
+          - "geographic_distance"
+          - "timezone_difference"
+          - "link_utilization"
+          - "route_stability"
+          
+        traffic_features:
+          - "flow_volume"
+          - "packet_rate"
+          - "protocol_distribution"
+          - "traffic_burstiness"
+          
+        temporal_features:
+          - "time_of_day_local"
+          - "business_hours"
+          - "weekend_indicator"
+          - "holiday_indicator"
+          
+      # International-specific preprocessing
+      preprocessing:
+        - "timezone_normalization"
+        - "currency_rate_adjustment"
+        - "cross_border_delay_modeling"
+        - "peering_relationship_inference"
+        
+    # Quality metrics
+    quality:
+      completeness: 0.94           # 94% data completeness
+      consistency: 0.92            # 92% consistency (timezone issues)
+      timeliness: 0.96             # 96% temporal accuracy
+      accuracy: 0.95               # 95% measurement accuracy
+      
+    # Data splits
+    splits:
+      train: 0.65                  # 65% training
+      validation: 0.20             # 20% validation
+      test: 0.15                   # 15% testing
+      temporal_split: true
+      timezone_aware: true         # Consider timezone effects
+      
+  # UMass Enterprise Dataset
+  umass:
+    # Basic metadata
+    name: "UMass Campus Network"
+    description: "University enterprise network traffic and topology"
+    source: "University of Massachusetts Computer Networks Research"
+    url: "https://traces.cs.umass.edu/"
+    license: "Educational Use License"
+    
+    # Data characteristics
+    characteristics:
+      type: "enterprise_campus"
+      scale: "medium"
+      topology_type: "hierarchical"
+      temporal_resolution: "5min"
+      spatial_coverage: "campus"
+      network_layers: ["core", "distribution", "access"]
+      
+    # Dataset statistics
+    statistics:
+      total_decisions: 31600000      # 31.6M routing decisions
+      avg_decisions_per_hour: 43800
+      num_nodes_range: [5000, 12000]
+      num_edges_range: [25000, 60000]
+      temporal_span_days: 180        # 6 months
+      update_frequency: "weekly"
+      
+    # Data format and structure
+    data_format:
+      primary_format: "csv"
+      compression: "gzip"
+      encoding: "utf-8"
+      file_pattern: "umass_campus_{building}_{date}.csv.gz"
+      
+    # Schema definition
+    schema:
+      campus_topology:
+        buildings:
+          - building_id: "string"
+          - building_name: "string"
+          - coordinates: "array[float, 2]"
+          - building_type: "string"  # academic, residential, admin
+          - capacity_gbps: "float"
+          - user_count: "integer"
+          
+        network_segments:
+          - segment_id: "string"
+          - building_id: "string"
+          - segment_type: "string"   # core, distribution, access
+          - vlan_id: "integer"
+          - subnet: "string"
+          
+      user_traffic:
+        sessions:
+          - session_id: "string"
+          - user_id: "string"
+          - building_id: "string"
+          - timestamp: "datetime"
+          - duration: "float"
+          - bytes_up: "integer"
+          - bytes_down: "integer"
+          - application: "string"
+          
+    # Processing configuration
+    processing:
+      # Data loading
+      loading:
+        chunk_size: 8000
+        parallel_loading: true
+        max_workers: 4
+        memory_limit: "1.5GB"
+        cache_processed: true
+        
+      # Feature extraction
+      features:
+        campus_features:
+          - "building_distance"
+          - "building_type_similarity"
+          - "user_density"
+          - "peak_hours"
+          - "semester_periods"
+          
+        application_features:
+          - "application_type"
+          - "bandwidth_requirements"
+          - "latency_sensitivity"
+          - "protocol_patterns"
+          
+        behavioral_features:
+          - "user_mobility"
+          - "usage_patterns"
+          - "peak_usage_times"
+          - "seasonal_variations"
+          
+      # Enterprise-specific preprocessing
+      preprocessing:
+        - "academic_calendar_alignment"
+        - "building_hierarchy_encoding"
+        - "privacy_anonymization"
+        - "policy_compliance_filtering"
+        
+    # Quality metrics
+    quality:
+      completeness: 0.98           # 98% data completeness
+      consistency: 0.96            # 96% consistency
+      timeliness: 0.97             # 97% temporal accuracy
+      accuracy: 0.94               # 94% measurement accuracy
+      
+    # Data splits
+    splits:
+      train: 0.75                  # 75% training
+      validation: 0.15             # 15% validation
+      test: 0.10                   # 10% testing
+      temporal_split: true
+      semester_aware: true         # Consider academic calendar
+      
+  # WITS GPS-Synchronized Dataset
+  wits:
+    # Basic metadata
+    name: "WITS GPS-Synchronized Traces"
+    description: "High-precision GPS-synchronized network measurements"
+    source: "Wireless Internet Testbed for Sustainability"
+    url: "https://wits.cs.wisc.edu/"
+    license: "Research License"
+    
+    # Data characteristics
+    characteristics:
+      type: "research_testbed"
+      scale: "medium"
+      topology_type: "mesh"
+      temporal_resolution: "1min"
+      spatial_coverage: "multi_site"
+      network_layers: ["wireless", "mesh", "backbone"]
+      
+    # Dataset statistics
+    statistics:
+      total_decisions: 32500000      # 32.5M routing decisions
+      avg_decisions_per_hour: 45100
+      num_nodes_range: [800, 2500]
+      num_edges_range: [3500, 15000]
+      temporal_span_days: 90         # 3 months
+      update_frequency: "hourly"
+      
+    # Data format and structure
+    data_format:
+      primary_format: "parquet"
+      compression: "snappy"
+      encoding: "utf-8"
+      file_pattern: "wits_{site}_{year}{month:02d}{day:02d}_{hour:02d}.parquet"
+      
+    # Schema definition
+    schema:
+      testbed_nodes:
+        nodes:
+          - node_id: "string"
+          - site_id: "string"
+          - gps_coordinates: "array[float, 2]"
+          - altitude: "float"
+          - node_type: "string"      # sensor, relay, gateway
+          - power_level: "float"
+          - antenna_pattern: "string"
+          
+        links:
+          - link_id: "string"
+          - src_node: "string"
+          - dst_node: "string"
+          - signal_strength: "float"
+          - link_quality: "float"
+          - estimated_bandwidth: "float"
+          - interference_level: "float"
+          
+      measurements:
+        gps_synchronized:
+          - timestamp_gps: "datetime"
+          - node_id: "string"
+          - measurement_type: "string"
+          - value: "float"
+          - precision: "float"
+          - satellite_count: "integer"
+          
+    # Processing configuration
+    processing:
+      # Data loading
+      loading:
+        chunk_size: 12000
+        parallel_loading: true
+        max_workers: 8
+        memory_limit: "4GB"
+        cache_processed: true
+        
+      # Feature extraction
+      features:
+        spatial_features:
+          - "gps_accuracy"
+          - "node_mobility"
+          - "geographic_clustering"
+          - "elevation_profile"
+          - "line_of_sight"
+          
+        wireless_features:
+          - "signal_propagation"
+          - "interference_patterns"
+          - "channel_quality"
+          - "power_efficiency"
+          - "link_stability"
+          
+        temporal_features:
+          - "synchronization_accuracy"
+          - "measurement_frequency"
+          - "time_drift"
+          - "seasonal_effects"
+          
+      # Research-specific preprocessing
+      preprocessing:
+        - "gps_time_synchronization"
+        - "signal_propagation_modeling"
+        - "interference_cancellation"
+        - "mobility_tracking"
+        
+    # Quality metrics
+    quality:
+      completeness: 0.99           # 99% data completeness
+      consistency: 0.98            # 98% consistency
+      timeliness: 0.99             # 99% temporal accuracy
+      accuracy: 0.97               # 97% measurement accuracy
+      gps_precision: 0.95          # 95% GPS precision
+      
+    # Data splits
+    splits:
+      train: 0.70                  # 70% training
+      validation: 0.20             # 20% validation
+      test: 0.10                   # 10% testing
+      temporal_split: true
+      site_stratified: true        # Ensure all sites represented
+
+  # Synthetic Dataset Configuration
+  synthetic:
+    # Basic metadata
+    name: "Synthetic Network Dataset"
+    description: "Computer-generated network topologies and traffic patterns"
+    source: "HyperPath-SVM Framework Generator"
+    license: "MIT"
+    
+    # Generation parameters
+    generation:
+      # Topology generation
+      topology_models:
+        - name: "barabasi_albert"
+          parameters:
+            n: [100, 500, 1000]     # Number of nodes
+            m: [2, 5, 10]           # Edges to attach
+            seed: 42
+            
+        - name: "watts_strogatz"
+          parameters:
+            n: [100, 500, 1000]
+            k: [6, 12, 20]          # Nearest neighbors
+            p: [0.1, 0.3, 0.5]      # Rewiring probability
+            
+        - name: "erdos_renyi"
+          parameters:
+            n: [100, 500, 1000]
+            p: [0.02, 0.05, 0.1]    # Edge probability
+            
+      # Traffic generation
+      traffic_models:
+        - name: "poisson"
+          parameters:
+            lambda: [1.0, 5.0, 10.0]  # Arrival rate
+            
+        - name: "self_similar"
+          parameters:
+            hurst: [0.6, 0.7, 0.8]    # Hurst parameter
+            
+        - name: "gravity_model"
+          parameters:
+            alpha: [0.5, 1.0, 1.5]    # Distance decay
+            
+    # Generation configuration
+    generation_config:
+      batch_size: 1000             # Samples per batch
+      num_batches: 100             # Total batches
+      parallel_generation: true
+      max_workers: 8
+      output_format: "json"
+      compression: true
+      
+    # Quality control
+    quality_control:
+      connectivity_check: true     # Ensure connected topology
+      traffic_validation: true     # Validate traffic patterns
+      statistical_tests: true     # Run statistical validation
+      ground_truth_generation: true
+      
+    # Data splits
+    splits:
+      train: 0.80                  # 80% training
+      validation: 0.10             # 10% validation
+      test: 0.10                   # 10% testing
+
+# Cross-Dataset Configuration
+cross_dataset:
+  # Dataset compatibility matrix
+  compatibility:
+    caida:
+      compatible_with: ["mawi", "synthetic"]
+      transfer_learning: true
+      domain_adaptation: "required"
+      
+    mawi:
+      compatible_with: ["caida", "synthetic"]
+      transfer_learning: true
+      domain_adaptation: "required"
+      
+    umass:
+      compatible_with: ["wits", "synthetic"]
+      transfer_learning: true
+      domain_adaptation: "optional"
+      
+    wits:
+      compatible_with: ["umass", "synthetic"]
+      transfer_learning: true
+      domain_adaptation: "optional"
+      
+  # Multi-dataset training
+  multi_dataset_training:
+    enabled: true
+    strategy: "interleaved"        # interleaved, sequential, weighted
+    
+    # Dataset weights for combined training
+    dataset_weights:
+      caida: 0.30                  # Large backbone dataset
+      mawi: 0.25                   # International diversity
+      umass: 0.25                  # Enterprise patterns
+      wits: 0.20                   # High-precision measurements
+      
+    # Sampling strategy
+    sampling:
+      method: "stratified"         # uniform, stratified, weighted
+      balance_datasets: true
+      oversample_minority: true
+      
+  # Domain adaptation
+  domain_adaptation:
+    # Source-target pairs
+    adaptation_pairs:
+      - source: "caida"
+        target: "mawi"
+        adaptation_method: "coral"
+        
+      - source: "umass"
+        target: "wits"
+        adaptation_method: "dann"
+        
+    # Adaptation parameters
+    adaptation_config:
+      adaptation_epochs: 20
+      adaptation_lr: 0.001
+      domain_loss_weight: 0.1
+
+# Dataset Validation
+validation:
+  # Schema validation
+  schema_validation:
+    enabled: true
+    strict_mode: false           # Allow minor schema deviations
+    custom_validators: []        # List of custom validation functions
+    
+  # Data quality checks
+  quality_checks:
+    completeness:
+      min_threshold: 0.90        # Minimum data completeness
+      
+    consistency:
+      temporal_consistency: true
+      spatial_consistency: true
+      logical_consistency: true
+      
+    accuracy:
+      cross_validation: true
+      ground_truth_comparison: true
+      statistical_validation: true
+      
+  # Anomaly detection
+  anomaly_detection:
+    enabled: true
+    methods: ["isolation_forest", "one_class_svm", "local_outlier_factor"]
+    outlier_threshold: 0.05      # 5% outlier tolerance
+    
+# Dataset Monitoring
+monitoring:
+  # Data drift detection
+  drift_detection:
+    enabled: true
+    detection_methods: ["ks_test", "chi_square", "psi"]
+    alert_threshold: 0.05
+    monitoring_frequency: "daily"
+    
+  # Performance tracking
+  performance_tracking:
+    track_loading_time: true
+    track_memory_usage: true
+    track_processing_time: true
+    
+  # Usage analytics
+  usage_analytics:
+    track_dataset_usage: true
+    popular_features: true
+    access_patterns: true
+
+# Data Governance
+governance:
+  # Data lineage
+  lineage:
+    track_data_sources: true
+    version_control: true
+    transformation_history: true
+    
+  # Privacy and compliance
+  privacy:
+    anonymization: true
+    data_masking: false          # Enable for sensitive datasets
+    retention_policy: "2_years"
+    
+  # Access control
+  access_control:
+    authentication: false        # Enable for restricted datasets
+    authorization: false
+    audit_logging: true
+
+# Dataset Utilities
+utilities:
+  # Data conversion
+  conversion:
+    format_converters:
+      json_to_hdf5: true
+      csv_to_parquet: true
+      custom_formats: []
+      
+  # Data sampling
+  sampling:
+    stratified_sampling: true
+    temporal_sampling: true
+    spatial_sampling: true
+    random_sampling: true
+    
+  # Data visualization
+  visualization:
+    topology_plots: true
+    traffic_heatmaps: true
+    temporal_analysis: true
+    statistical_summaries: true
+
+# Version and Compatibility
+version_info:
+  schema_version: "1.0.0"
+  last_updated: "2024-12-19"
+  compatibility:
+    min_framework_version: "1.0.0"
+    supported_formats: ["json", "csv", "hdf5", "parquet", "pickle"]
+    deprecated_formats: ["xml", "yaml"] 

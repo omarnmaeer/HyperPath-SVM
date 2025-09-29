@@ -1,0 +1,496 @@
+# File: config/config.yaml
+# Main Configuration for HyperPath-SVM Framework
+# ==================================================
+
+# Framework Metadata
+framework:
+    name: "HyperPath-SVM"
+    version: "1.0.0"
+    description: "Intelligent Network Routing Framework using Hybrid SVMs"
+    authors: ["HyperPath-SVM Research Team"]
+    license: "MIT"
+    
+  # Performance Targets
+  performance_targets:
+    accuracy: 0.965              # 96.5% routing accuracy
+    inference_time_ms: 1.8       # ≤1.8ms per decision
+    memory_usage_mb: 98.0        # ≤98MB total memory
+    adaptation_time_min: 2.3     # ≤2.3min for adaptation
+    throughput_decisions_per_sec: 555  # ~1000ms/1.8ms
+    benchmark_capacity: 127000000 # 127M routing decisions
+  
+  # Core Model Configuration
+  model:
+    # Main HyperPath-SVM parameters
+    hyperpath_svm:
+      C: 1.0                     # SVM regularization parameter
+      epsilon: 0.1               # SVR tolerance
+      max_iter: 1000             # Maximum iterations
+      tol: 1e-3                  # Convergence tolerance
+      cache_size: 200            # Kernel cache size (MB)
+      shrinking: true            # Use shrinking heuristic
+      verbose: false             # Verbose output during training
+      
+    # DDWE (Dynamic Dual-Weight Evolution) Optimizer
+    ddwe:
+      learning_rate: 0.01        # Base learning rate
+      quantum_enhanced: true     # Enable quantum enhancement
+      adaptation_rate: 0.001     # Adaptation speed
+      memory_decay: 0.95         # Memory decay factor
+      exploration_factor: 0.1    # Exploration vs exploitation
+      
+      # Dual-weight configuration
+      dual_weights:
+        primary_init: "xavier"   # Weight initialization method
+        secondary_init: "he"     # Secondary weight initialization
+        weight_decay: 1e-4       # L2 regularization
+        gradient_clipping: 10.0  # Gradient clipping threshold
+        
+      # Quantum parameters
+      quantum:
+        num_qubits: 10           # Number of qubits
+        num_layers: 6            # Circuit depth
+        entanglement: "linear"   # Entanglement pattern
+        measurement_shots: 1024  # Quantum measurements
+        backend: "qasm_simulator" # Quantum backend
+        
+      # Adaptive learning
+      adaptive:
+        schedule: "cosine"       # Learning rate schedule
+        warmup_epochs: 10        # Warmup epochs
+        min_lr: 1e-6            # Minimum learning rate
+        patience: 15            # Early stopping patience
+        
+    # TGCK (Temporal Graph Convolutional Kernel)
+    tgck:
+      temporal_window: 24        # Hours of temporal context
+      confidence_threshold: 0.8  # Prediction confidence threshold
+      kernel_type: "rbf"         # Kernel type (rbf, poly, linear)
+      gamma: "auto"              # RBF kernel bandwidth
+      degree: 3                  # Polynomial kernel degree
+      
+      # Graph convolution parameters
+      graph_conv:
+        num_layers: 3            # Number of GCN layers
+        hidden_dim: 64           # Hidden dimension
+        dropout: 0.1             # Dropout probability
+        activation: "relu"       # Activation function
+        normalization: "batch"   # Normalization type
+        
+      # Temporal processing
+      temporal:
+        aggregation: "attention" # Temporal aggregation method
+        num_heads: 4            # Multi-head attention heads
+        sequence_length: 24     # Input sequence length
+        stride: 1               # Temporal stride
+        
+      # Spectral analysis
+      spectral:
+        num_eigenvectors: 50    # Number of graph eigenvectors
+        eigenvalue_threshold: 1e-6  # Eigenvalue cutoff
+        spectral_norm: true     # Normalize spectral features
+  
+  # Data Processing Configuration
+  data:
+    # Dataset paths and settings
+    datasets:
+      base_path: "datasets/"
+      supported_formats: ["json", "csv", "hdf5", "pkl"]
+      max_memory_usage: "4GB"   # Maximum memory for data loading
+      
+    # Preprocessing settings
+    preprocessing:
+      normalize_features: true
+      standardize_features: true
+      feature_selection: true
+      missing_value_strategy: "interpolate"
+      outlier_detection: "isolation_forest"
+      outlier_threshold: 0.05
+      
+      # Feature engineering
+      feature_engineering:
+        temporal_features: true
+        graph_features: true
+        statistical_features: true
+        polynomial_features: false
+        interaction_features: false
+        
+    # Data augmentation
+    augmentation:
+      enabled: true
+      augmentation_ratio: 0.3    # 30% additional synthetic data
+      
+      # Augmentation techniques
+      techniques:
+        topology_aware: true
+        traffic_pattern: true
+        temporal_jitter: true
+        noise_injection: true
+        path_variants: true
+        
+      # Augmentation parameters
+      parameters:
+        noise_level: 0.1
+        jitter_range: 0.05
+        scaling_factors: [0.8, 1.2, 1.5]
+        rotation_angles: [5, 10, 15]  # degrees
+        
+    # Data validation
+    validation:
+      schema_validation: true
+      data_quality_checks: true
+      consistency_checks: true
+      completeness_threshold: 0.95
+      
+  # Training Configuration
+  training:
+    # Basic training parameters
+    epochs: 100
+    batch_size: 1000
+    validation_split: 0.2
+    test_split: 0.15
+    random_seed: 42
+    
+    # Optimization settings
+    optimizer:
+      name: "adam"
+      learning_rate: 0.001
+      beta1: 0.9
+      beta2: 0.999
+      epsilon: 1e-8
+      weight_decay: 1e-4
+      
+    # Learning rate scheduling
+    lr_scheduler:
+      enabled: true
+      type: "plateau"            # plateau, cosine, exponential
+      patience: 10
+      factor: 0.5
+      min_lr: 1e-6
+      
+    # Early stopping
+    early_stopping:
+      enabled: true
+      patience: 20
+      min_delta: 0.001
+      restore_best_weights: true
+      
+    # Checkpointing
+    checkpointing:
+      enabled: true
+      save_best_only: true
+      save_frequency: 10         # epochs
+      max_to_keep: 5
+      
+    # Mixed precision training
+    mixed_precision:
+      enabled: false             # Enable for large models
+      loss_scale: "dynamic"
+      
+  # Evaluation Configuration
+  evaluation:
+    # Metrics to compute
+    metrics:
+      primary: ["routing_accuracy", "inference_time", "memory_usage"]
+      secondary: ["path_optimality", "convergence_rate", "adaptation_time"]
+      detailed: ["first_hop_accuracy", "path_similarity", "network_stability"]
+      
+    # Cross-validation settings
+    cross_validation:
+      enabled: true
+      method: "temporal"         # temporal, k_fold, stratified
+      n_splits: 5
+      test_size: 0.2
+      shuffle: false             # Preserve temporal order
+      
+    # Baseline comparison
+    baselines:
+      enabled: true
+      methods: ["gnn", "lstm", "static_svm", "ospf", "rip"]
+      parallel_evaluation: true
+      max_workers: 4
+      
+    # Statistical testing
+    statistical_tests:
+      significance_level: 0.05
+      multiple_comparison_correction: "bonferroni"
+      effect_size_threshold: 0.2
+      confidence_interval: 0.95
+  
+  # Experiment Configuration
+  experiments:
+    # Experiment tracking
+    tracking:
+      enabled: true
+      backend: "tensorboard"     # tensorboard, wandb, mlflow
+      log_dir: "logs/"
+      
+    # Experiment parameters
+    experiment:
+      name: "hyperpath_svm_main"
+      description: "Main HyperPath-SVM experiment"
+      tags: ["routing", "svm", "quantum", "temporal"]
+      
+    # Reproducibility
+    reproducibility:
+      set_deterministic: true
+      log_git_info: true
+      save_environment: true
+      
+    # Hyperparameter optimization
+    hyperopt:
+      enabled: false             # Enable for hyperparameter tuning
+      method: "optuna"           # optuna, hyperopt, ray_tune
+      n_trials: 100
+      timeout_per_trial: 3600    # seconds
+      
+  # Logging Configuration
+  logging:
+    level: "INFO"                # DEBUG, INFO, WARNING, ERROR
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    # File logging
+    file_logging:
+      enabled: true
+      log_file: "logs/hyperpath_svm.log"
+      max_bytes: 10485760        # 10MB
+      backup_count: 5
+      
+    # Console logging
+    console_logging:
+      enabled: true
+      colored_output: true
+      
+    # Performance logging
+    performance_logging:
+      enabled: true
+      log_file: "logs/performance.log"
+      metrics_interval: 100      # Log every N iterations
+      
+  # Hardware Configuration
+  hardware:
+    # CPU settings
+    cpu:
+      num_cores: -1              # Use all available cores
+      thread_pool_size: 8
+      memory_limit: "8GB"
+      
+    # GPU settings (if available)
+    gpu:
+      enabled: false             # Auto-detect GPU availability
+      device_id: 0
+      memory_growth: true
+      memory_limit: "4GB"
+      
+    # Quantum computing (if available)
+    quantum:
+      enabled: true
+      backend_preference: ["qasm_simulator", "statevector_simulator"]
+      max_qubits: 16
+      max_shots: 8192
+  
+  # Production Configuration
+  production:
+    # Deployment settings
+    deployment:
+      mode: "production"         # development, staging, production
+      max_concurrent_requests: 100
+      request_timeout: 5.0       # seconds
+      
+    # Model serving
+    serving:
+      model_format: "pickle"     # pickle, onnx, tensorflow
+      warm_up: true
+      batch_prediction: true
+      max_batch_size: 50
+      
+    # Monitoring
+    monitoring:
+      enabled: true
+      metrics_collection: true
+      alert_thresholds:
+        accuracy_drop: 0.02      # 2% accuracy drop triggers alert
+        latency_increase: 2.0    # 2x latency increase triggers alert
+        error_rate: 0.05         # 5% error rate triggers alert
+        
+    # Auto-scaling
+    auto_scaling:
+      enabled: false
+      min_instances: 1
+      max_instances: 10
+      target_cpu_utilization: 70
+      scale_up_cooldown: 300     # seconds
+      scale_down_cooldown: 300   # seconds
+  
+  # Security Configuration
+  security:
+    # Data security
+    data_encryption:
+      enabled: false             # Enable for sensitive data
+      algorithm: "AES-256"
+      
+    # Model security
+    model_protection:
+      checksum_validation: true
+      model_signing: false
+      
+    # API security (if using API deployment)
+    api_security:
+      authentication: false      # Enable for production APIs
+      rate_limiting: true
+      max_requests_per_minute: 1000
+  
+  # Storage Configuration
+  storage:
+    # Model storage
+    models:
+      base_path: "models/"
+      versioning: true
+      compression: true
+      format: "pickle"           # pickle, joblib, custom
+      
+    # Data storage
+    data:
+      base_path: "data/"
+      caching: true
+      cache_size: "2GB"
+      compression: "gzip"
+      
+    # Results storage
+    results:
+      base_path: "results/"
+      auto_backup: true
+      backup_frequency: "daily"
+      retention_days: 30
+      
+    # Temporary storage
+    temp:
+      base_path: "temp/"
+      auto_cleanup: true
+      cleanup_interval: 3600     # seconds
+      max_size: "1GB"
+  
+  # Integration Configuration
+  integrations:
+    # Database integration
+    database:
+      enabled: false
+      type: "postgresql"         # postgresql, mysql, mongodb
+      connection_string: ""
+      pool_size: 10
+      
+    # Message queue integration
+    message_queue:
+      enabled: false
+      type: "redis"              # redis, rabbitmq, kafka
+      connection_string: ""
+      
+    # Cloud integration
+    cloud:
+      enabled: false
+      provider: "aws"            # aws, azure, gcp
+      region: "us-east-1"
+      
+  # Development Configuration
+  development:
+    # Debugging
+    debug:
+      enabled: false             # Enable debug mode
+      profiling: false           # Enable profiling
+      memory_tracking: false     # Track memory usage
+      
+    # Testing
+    testing:
+      unit_tests: true
+      integration_tests: true
+      performance_tests: true
+      test_data_size: "small"    # small, medium, large
+      
+    # Code quality
+    code_quality:
+      linting: true
+      type_checking: true
+      coverage_threshold: 0.85   # 85% code coverage
+      
+  # Error Handling Configuration
+  error_handling:
+    # Retry logic
+    retry:
+      max_attempts: 3
+      backoff_factor: 2.0
+      max_wait_time: 60          # seconds
+      
+    # Graceful degradation
+    graceful_degradation:
+      enabled: true
+      fallback_model: "static_svm"
+      fallback_threshold: 0.5    # Accuracy threshold for fallback
+      
+    # Error reporting
+    error_reporting:
+      enabled: true
+      include_stack_trace: false # Set true for development
+      max_error_count: 100
+  
+  # Customization Points
+  customization:
+    # Custom components
+    custom_components:
+      custom_kernel: null        # Path to custom kernel implementation
+      custom_optimizer: null     # Path to custom optimizer
+      custom_metrics: null       # Path to custom metrics
+      
+    # Plugin system
+    plugins:
+      enabled: false
+      plugin_directory: "plugins/"
+      auto_load: false
+      
+    # Hooks
+    hooks:
+      pre_training: []           # List of pre-training hooks
+      post_training: []          # List of post-training hooks
+      pre_prediction: []         # List of pre-prediction hooks
+      post_prediction: []        # List of post-prediction hooks
+  
+  # Environment-Specific Overrides
+  environments:
+    development:
+      logging:
+        level: "DEBUG"
+      hardware:
+        cpu:
+          num_cores: 2
+      production:
+        deployment:
+          mode: "development"
+          
+    testing:
+      data:
+        datasets:
+          max_memory_usage: "1GB"
+      training:
+        epochs: 10
+        batch_size: 100
+        
+    production:
+      logging:
+        level: "WARNING"
+      monitoring:
+        enabled: true
+      security:
+        model_protection:
+          checksum_validation: true
+  
+  # Version Information
+  version_info:
+    config_version: "1.0.0"
+    last_updated: "2024-12-19"
+    compatibility:
+      min_python: "3.8"
+      max_python: "3.12"
+      required_packages:
+        - "numpy>=1.21.0"
+        - "scikit-learn>=1.0.0"
+        - "torch>=1.12.0"
+        - "networkx>=2.6.0" 
